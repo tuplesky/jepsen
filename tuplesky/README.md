@@ -83,6 +83,34 @@ dials the others at those names.
    lein run test-all --nodes-file ~/nodes --time-limit 120
    ```
 
+### On one machine, with Docker
+
+`docker/up.sh` stands up a cluster of Debian containers `n1`..`nN` on a
+Docker network, with this host as the control node. It writes an SSH key
+and a nodes file, and an `/etc/hosts` block so this host reaches the nodes
+by name (it uses `sudo` when not root). `docker/smoke.sh` then deploys a
+domain on the cluster the way the test's DB does, over SSH, and checks that
+every voter takes a write. It is a quick check of the deployment before a
+Jepsen run.
+
+```sh
+docker/up.sh --nodes 5 --dir docker-cluster
+docker/smoke.sh --bin-dir ../../tuplesky/target/release --dir docker-cluster
+lein run test --nodes-file docker-cluster/nodes \
+  --ssh-private-key docker-cluster/id_ed25519 --username root \
+  --bin-dir ../../tuplesky/target/release \
+  --workload append --nemesis kill,pause,partition --time-limit 300
+docker/down.sh --dir docker-cluster
+```
+
+The containers share the host's kernel and clock. Leave `clock` out of
+`--nemesis` here, since a clock fault would move every node's clock and
+the control node's together. The containers get `NET_ADMIN` for
+partitions and nothing more.
+
+The TupleSky repository's `jepsen` workflow does exactly this on a GitHub
+runner.
+
 Useful options:
 
 | Option | Default | Meaning |
