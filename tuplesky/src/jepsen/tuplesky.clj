@@ -195,8 +195,10 @@
   "Every workload against every fault combination, unless the CLI names
   one."
   [opts]
-  (let [ws (if-let [w (:workload opts)] [w] (keys workloads))
-        nems (if (seq (:nemesis opts)) [(:nemesis opts)] all-nemeses)]
+  (let [ws   (if-let [w (:workload opts)] [w] (keys workloads))
+        ; An explicit `none` parses to [], which is a choice: only an
+        ; absent option means every combination.
+        nems (if (nil? (:nemesis opts)) all-nemeses [(:nemesis opts)])]
     (for [n nems, w ws, _ (range (:test-count opts))]
       (tuplesky-test (assoc opts :nemesis n :workload w)))))
 
@@ -204,7 +206,11 @@
   [& args]
   (cli/run! (merge (cli/single-test-cmd {:test-fn  tuplesky-test
                                          :opt-spec cli-opts})
+                   ; Without these defaults, test-all can tell an
+                   ; absent --workload or --nemesis from a chosen one.
                    (cli/test-all-cmd {:tests-fn all-tests
-                                      :opt-spec cli-opts})
+                                      :opt-spec (cli/without-defaults-for
+                                                  [:workload :nemesis]
+                                                  cli-opts)})
                    (cli/serve-cmd))
             args))

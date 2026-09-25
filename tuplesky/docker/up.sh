@@ -45,7 +45,9 @@ mkdir -p "$DIR"
 DIR=$(cd "$DIR" && pwd)
 
 echo "building $IMAGE"
-docker build -q "${BUILD_ARGS[@]}" -t "$IMAGE" "$HERE/node" >/dev/null
+# The expansion guard keeps an empty array working under `set -u` on
+# bash before 4.4 (macOS).
+docker build -q ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"} -t "$IMAGE" "$HERE/node" >/dev/null
 
 [ -f "$DIR/id_ed25519" ] || ssh-keygen -q -t ed25519 -N '' -C jepsen-control -f "$DIR/id_ed25519"
 

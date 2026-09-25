@@ -38,7 +38,10 @@
 (defn voter
   "One-based voter number of a node."
   [test node]
-  (inc (.indexOf ^java.util.List (vec (:nodes test)) node)))
+  (let [i (.indexOf ^java.util.List (vec (:nodes test)) node)]
+    (when (neg? i)
+      (throw+ {:type ::unknown-node, :node node}))
+    (inc i)))
 
 (defn hosts-spec
   "The harness's host list: every node a voter, at its own name, on the

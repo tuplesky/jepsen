@@ -144,10 +144,14 @@
                    (read-line-within in (+ (:budget-ms test) 10000)))]
       (if line
         (completion op (json/parse-string line true))
+        ; The shim is stopped, so this process's client is gone: end the
+        ; process either way, or a :fail here would leave the next op
+        ; writing to a closed stream.
         (do (stop-shim! shim)
             (assoc op
-                   :type  (if (read-only? op) :fail :info)
-                   :error :shim-unresponsive)))))
+                   :type         (if (read-only? op) :fail :info)
+                   :error        :shim-unresponsive
+                   :end-process? true)))))
 
   (teardown! [this test])
 
