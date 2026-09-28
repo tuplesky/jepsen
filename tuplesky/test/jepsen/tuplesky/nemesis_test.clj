@@ -30,13 +30,16 @@
 
 (defn db-ops
   "The kills, starts, pauses and resumes of the separated DB package, run
-  through a simulated test."
+  through a simulated test. Nemesis operations are :info, which
+  gen.test/perfect leaves out, so this takes every operation from perfect*
+  and keeps the :info ones (an invocation and its completion each)."
   [n]
   (let [pkgs (tn/separate-db-faults opts (nc/nemesis-packages opts))
         g    (:generator (first (filter tn/db-package? pkgs)))]
     (->> (gen/limit n g)
          gen/nemesis
-         (gen.test/perfect (gen.test/n+nemesis-context 2)))))
+         gen.test/perfect*
+         (filter (comp #{:info} :type)))))
 
 (deftest separates-only-the-db-package
   (let [pkgs  (nc/nemesis-packages opts)
