@@ -14,13 +14,13 @@
                     [generator :as gen]
                     [tests :as tests]]
             [jepsen.checker.timeline :as timeline]
-            [jepsen.nemesis.combined :as nc]
             [jepsen.os.debian :as debian]
             [jepsen.tests.cycle [append :as append]
                                 [wr :as wr]]
             [jepsen.tests.linearizable-register :as lr]
             [jepsen.tuplesky [client :as client]
-                             [db :as db]]
+                             [db :as db]
+                             [nemesis :as tn]]
             [knossos.model :as model]))
 
 (defn append-workload
@@ -89,7 +89,9 @@
   (let [workload-name (:workload opts)
         workload      ((workloads workload-name) opts)
         db            (db/db)
-        nemesis       (nc/nemesis-package
+        ; Kill/start and pause/resume on their own schedules, so a start
+        ; follows every kill within one interval (see jepsen.tuplesky.nemesis).
+        nemesis       (tn/nemesis-package
                         {:db        db
                          :nodes     (:nodes opts)
                          :faults    (:nemesis opts)

@@ -53,6 +53,14 @@ Every test also runs a crash check: any `panicked at` in a voter's
 `--nemesis` takes a comma-separated list of `kill`, `pause`, `partition` and
 `clock`, or `none`. Jepsen's combined nemesis package drives them.
 
+Kills and pauses run on schedules of their own (`jepsen.tuplesky.nemesis`):
+each is a flip-flop, kill then start or pause then resume, staggered by
+`--nemesis-interval`. So a start follows every kill within twice the
+interval. The combined package draws both from one mix instead, where a
+start waits until the mix draws kill/start again; that left every node down
+for two to four minutes in some runs. The namespace depends on Jepsen
+alone, so TupleSky's etcd baseline loads it too.
+
 ## Running it
 
 You need a Jepsen cluster: a control node and 3 or 5 Debian nodes reachable
