@@ -101,6 +101,16 @@
         binary
         :--config "coordd.toml"))))
 
+(defn store-file
+  "The voter's store database, the newest generation's `domain.redb` under
+  its bundle, or nil when there is none."
+  [n]
+  (some-> (meh (c/exec :ls :-1 (c/lit (str (bundle n) "/state/gen-*/domain.redb"))))
+          str/split-lines
+          last
+          str/trim
+          not-empty))
+
 (defn kill!
   "Kills coordd outright."
   [test node]
@@ -139,10 +149,16 @@
     (meh (kill! test node))
     (c/su (c/exec :rm :-rf dir)))
 
+  ; The store comes too, before teardown removes it: a voter that stops on
+  ; a release contradicting its own execution leaves the orders to compare
+  ; only there. It is copied while coordd runs; redb commits are atomic, so
+  ; the copy opens at its last commit.
   db/LogFiles
   (log-files [this test node]
-    (let [n (voter test node)]
-      {(logfile n) "coordd.log"}))
+    (let [n     (voter test node)
+          store (store-file n)]
+      (cond-> {(logfile n) "coordd.log"}
+        store (assoc store "domain.redb"))))
 
   db/Process
   (start! [this test node]
