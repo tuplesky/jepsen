@@ -23,6 +23,20 @@
   [pkg]
   (boolean (some #(= "kill" (:name %)) (:perf pkg))))
 
+(defn stagger
+  "Like gen/stagger up to io.jepsen/generator 0.1.3: delays between g's
+  operations are uniform in [0, 2 * interval) seconds. From 0.1.4 on,
+  gen/stagger draws them from an exponential distribution capped at 100
+  seconds, so a start could follow a kill by over three intervals. This takes
+  uniform delays through stagger-nanos where the generator library has it
+  (0.1.4 on), and from gen/stagger where that is still uniform (the etcd
+  test's Jepsen 0.3.11 uses 0.1.1)."
+  [interval g]
+  (if-let [stagger-nanos (resolve 'jepsen.generator/stagger-nanos)]
+    (let [bound (gen/secs->nanos (* 2 interval))]
+      (stagger-nanos (fn [] (rand/long bound)) g))
+    (gen/stagger interval g)))
+
 (defn db-generator
   "A generator of kills and pauses, like nc/db-generators', with kill/start
   and pause/resume each staggered by :interval on their own. Nil when opts
@@ -40,10 +54,10 @@
         start  {:type :info, :f :start, :value :all}
         resume {:type :info, :f :resume, :value :all}
         gens   (cond-> []
-                 kill?  (conj (gen/stagger interval
-                                           (gen/flip-flop kill (gen/repeat start))))
-                 pause? (conj (gen/stagger interval
-                                           (gen/flip-flop pause (gen/repeat resume)))))]
+                 kill?  (conj (stagger interval
+                                       (gen/flip-flop kill (gen/repeat start))))
+                 pause? (conj (stagger interval
+                                       (gen/flip-flop pause (gen/repeat resume)))))]
     (when (seq gens)
       (apply gen/any gens))))
 

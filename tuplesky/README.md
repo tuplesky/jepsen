@@ -55,8 +55,9 @@ Every test also runs a crash check: any `panicked at` in a voter's
 
 Kills and pauses run on schedules of their own (`jepsen.tuplesky.nemesis`):
 each is a flip-flop, kill then start or pause then resume, staggered by
-`--nemesis-interval`. So a start follows every kill within twice the
-interval. The combined package draws both from one mix instead, where a
+`--nemesis-interval`, with delays uniform up to twice the interval (newer
+Jepsen's `gen/stagger` is exponential, capped at 100 seconds). So a start
+follows every kill within twice the interval. The combined package draws both from one mix instead, where a
 start waits until the mix draws kill/start again; that left every node down
 for two to four minutes in some runs. The namespace depends on Jepsen
 alone, so TupleSky's etcd baseline loads it too.
