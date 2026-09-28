@@ -62,6 +62,12 @@ start waits until the mix draws kill/start again; that left every node down
 for two to four minutes in some runs. The namespace depends on Jepsen
 alone, so TupleSky's etcd baseline loads it too.
 
+Pauses and resumes signal `coordd` by process name (`pkill`), not with
+Jepsen's `grepkill!`. `grepkill!` runs `pgrep -f coordd | xargs kill` in a
+`bash -c` that names the pattern, and `pgrep` can list the pipeline's own
+`xargs` before it execs, which then stops itself: the pause never returns
+and holds the nemesis. The etcd baseline hung this way three times.
+
 ## Running it
 
 You need a Jepsen cluster: a control node and 3 or 5 Debian nodes reachable

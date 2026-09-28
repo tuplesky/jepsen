@@ -151,9 +151,13 @@
   (kill! [this test node]
     (kill! test node))
 
+  ; By process name (pkill), not cu/grepkill!: its `pgrep -f pattern |
+  ; xargs kill` can list its own xargs, still a fork of the `bash -c`
+  ; that names the pattern, and xargs then stops itself, so the pause
+  ; never returns and holds the nemesis (seen in the etcd baseline).
   db/Pause
-  (pause!  [this test node] (c/su (cu/grepkill! :stop "coordd")))
-  (resume! [this test node] (c/su (cu/grepkill! :cont "coordd"))))
+  (pause!  [this test node] (c/su (cu/signal! "coordd" "STOP")))
+  (resume! [this test node] (c/su (cu/signal! "coordd" "CONT"))))
 
 (defn db
   "A TupleSky DB."
