@@ -151,10 +151,13 @@
 
   ; The store comes too, before teardown removes it: a voter that stops on
   ; a release contradicting its own execution leaves the orders to compare
-  ; only there. It is copied while coordd runs; redb commits are atomic, so
-  ; the copy opens at its last commit.
+  ; only there. coordd is killed first (the teardown kills it anyway): a
+  ; copy taken while it commits can read one commit's header and pages a
+  ; later commit reused, while a copy of a killed store is a crash image,
+  ; which redb recovers to its last commit.
   db/LogFiles
   (log-files [this test node]
+    (meh (kill! test node))
     (let [n     (voter test node)
           store (store-file n)]
       (cond-> {(logfile n) "coordd.log"}
