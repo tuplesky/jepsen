@@ -26,17 +26,19 @@
   (atom 0))
 
 (defn shim-command
-  "The command line that starts a shim closest to `node`'s replica."
+  "The command line that starts a shim closest to `node`'s replica, writing
+  the upstream client's log to `log` when it is given. -server is the bare
+  host: the upstream client knows replicas by host."
   [test node log]
-  [(str (:bin-dir test) "/swiftpaxos-jepsen")
-   "-server"      (str node ":" db/replica-port)
-   "-master"      (or (:master-host test)
-                      (db/route-source (first (:nodes test))))
-   "-master-port" (str (:master-port test))
-   "-replicas"    (str (count (:nodes test)))
-   "-timeout-ms"  (str (:timeout-ms test))
-   "-connect-ms"  (str (:connect-ms test))
-   "-log"         (str log)])
+  (cond-> [(str (:bin-dir test) "/swiftpaxos-jepsen")
+           "-server"      (str node)
+           "-master"      (or (:master-host test)
+                              (db/route-source (first (:nodes test))))
+           "-master-port" (str (:master-port test))
+           "-replicas"    (str (count (:nodes test)))
+           "-timeout-ms"  (str (:timeout-ms test))
+           "-connect-ms"  (str (:connect-ms test))]
+    log (conj "-log" (str log))))
 
 (defn read-line-within
   "Reads one line from `reader` within `ms` milliseconds; nil on timeout or
@@ -50,11 +52,17 @@
   not connect."
   [test node]
   (let [instance (swap! instances inc)
-        base     (io/file (db/control-dir test) (str "shim-" node "-" instance))
+        cdir     (db/control-dir test)
+        ; Each session's client log only with --shim-logs: a run starts a
+        ; few hundred sessions. Their stderr, which says why one could not
+        ; start, goes to one file either way (appended, so they interleave
+        ; by line).
+        log      (when (:shim-logs test)
+                   (io/file cdir (str "shim-" node "-" instance ".log")))
         pb       (doto (ProcessBuilder. ^java.util.List
-                                        (shim-command test node (str base ".log")))
+                                        (shim-command test node log))
                    (.redirectError (ProcessBuilder$Redirect/appendTo
-                                     (io/file (str base ".err")))))
+                                     (io/file cdir "shims.err"))))
         proc     (.start pb)
         in       (io/reader (.getInputStream proc))
         out      (io/writer (.getOutputStream proc))

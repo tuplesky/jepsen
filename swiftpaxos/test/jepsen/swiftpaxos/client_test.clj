@@ -34,3 +34,15 @@
     (is (= [:info true]
            ((juxt :type :end-process?)
             (c/completion {:f :write, :value (independent/tuple 4 1)} nil))))))
+
+(deftest shim-commands
+  (let [test {:bin-dir "/b", :nodes ["n1" "n2"], :master-host "10.0.0.1"
+              :master-port 7087, :timeout-ms 5000, :connect-ms 30000}]
+    (testing "the bare host, and no client log unless one is given"
+      (is (= ["/b/swiftpaxos-jepsen" "-server" "n2" "-master" "10.0.0.1"
+              "-master-port" "7087" "-replicas" "2" "-timeout-ms" "5000"
+              "-connect-ms" "30000"]
+             (c/shim-command test "n2" nil))))
+    (testing "a client log when --shim-logs asks for one"
+      (is (= ["-log" "/s/shim-n2-1.log"]
+             (take-last 2 (c/shim-command test "n2" "/s/shim-n2-1.log")))))))

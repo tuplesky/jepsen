@@ -28,3 +28,10 @@
          (str/split-lines
            (db/config {:nodes ["n1" "n2" "n3"], :master-port 7087}
                       "10.0.0.1")))))
+
+(deftest socket-snapshots
+  (is (= {:log     "/opt/swiftpaxos/sockets.log"
+          :pidfile "/opt/swiftpaxos/sockets.pid"
+          :flags   "-tin"
+          :ports   [7070 8070]}
+         db/sockets)))

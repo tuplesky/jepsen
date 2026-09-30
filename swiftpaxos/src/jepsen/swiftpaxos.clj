@@ -143,6 +143,8 @@
     :default 5000
     :parse-fn parse-long]
 
+   [nil "--shim-logs" "Keep each shim session's client log in the store (control/shim-*.log). Off by default: a run starts a few hundred sessions."]
+
    [nil "--connect-ms MS" "How long connecting a shim may take."
     :default 30000
     :parse-fn parse-long]

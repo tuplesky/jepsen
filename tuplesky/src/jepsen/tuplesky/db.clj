@@ -22,6 +22,7 @@
                     [store :as store]
                     [util :as util :refer [meh]]]
             [jepsen.control.util :as cu]
+            [jepsen.tuplesky.sockets :as sockets]
             [slingshot.slingshot :refer [throw+]]))
 
 (def dir "/opt/tuplesky")
@@ -33,6 +34,16 @@
   (str dir "/n" n))
 
 (defn logfile [n] (str (bundle n) "/coordd.log"))
+
+(defn sockets
+  "The voter's UDP sockets, API and peer plane, every 10 s: a Send-Q that
+  stops draining under a partition shows there (see
+  jepsen.tuplesky.sockets)."
+  [test]
+  {:log     (str dir "/sockets.log")
+   :pidfile (str dir "/sockets.pid")
+   :flags   "-uanm"
+   :ports   [(:api-port test) (:peer-port test)]})
 (defn pidfile [n] (str (bundle n) "/coordd.pid"))
 
 (defn voter
@@ -136,6 +147,7 @@
         (c/cd (bundle n)
               (c/exec binary :--config "coordd.toml" :init)))
       (start! test node)
+      (sockets/start! (sockets test))
       (await-log! n "^coordd phase=" #"phase=live" 60000 "live")
       ; Every voter up before anyone waits for the mesh.
       (jepsen/synchronize test)
@@ -147,6 +159,7 @@
 
   (teardown! [this test node]
     (meh (kill! test node))
+    (sockets/stop! (sockets test))
     (c/su (c/exec :rm :-rf dir)))
 
   ; The store comes too, before teardown removes it: a voter that stops on
@@ -160,7 +173,8 @@
     (meh (kill! test node))
     (let [n     (voter test node)
           store (store-file n)]
-      (cond-> {(logfile n) "coordd.log"}
+      (cond-> {(logfile n)            "coordd.log"
+               (:log (sockets test)) "sockets.log"}
         store (assoc store "domain.redb"))))
 
   db/Process
