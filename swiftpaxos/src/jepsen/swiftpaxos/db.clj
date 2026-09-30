@@ -18,8 +18,16 @@
   message (\"received unknown client message\"). One kill and restart has
   been seen to end every replica this way.
 
-  The master pings replicas without a timeout, so a paused replica holds its
-  pings until it resumes: a paused leader is not replaced."
+  The master pings replicas without a timeout, in a sequential loop, so a
+  paused or partitioned replica holds its pings: a paused or partitioned
+  leader is not replaced. And a partition stalls a replica's sends toward
+  the cut peer within tens of seconds: each replica flushes its peers'
+  sockets from one sender under its global lock, with no write deadline, so
+  once the send buffer toward a cut peer fills, every send from that
+  replica waits on TCP's backed-off retransmit timer. `ok` counts under a
+  partition measure those timers, not the protocol. Each node's `ss`
+  snapshots (sockets.log, see jepsen.tuplesky.sockets) show it: Send-Q and
+  the retransmit timer on the connections toward the cut peers."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :refer [info warn]]
@@ -29,6 +37,7 @@
                     [store :as store]
                     [util :as util :refer [meh]]]
             [jepsen.control.util :as cu]
+            [jepsen.tuplesky.sockets :as sockets]
             [slingshot.slingshot :refer [throw+]])
   (:import (java.lang ProcessBuilder ProcessBuilder$Redirect)
            (java.net DatagramSocket InetAddress)
@@ -38,6 +47,7 @@
 (def binary (str dir "/swiftpaxos"))
 (def config-file (str dir "/swiftpaxos.conf"))
 (def logfile (str dir "/replica.log"))
+(def sockets-log (str dir "/sockets.log"))
 (def pidfile (str dir "/replica.pid"))
 
 (def replica-port
@@ -142,6 +152,14 @@
   [test node]
   (c/su (cu/stop-daemon! "swiftpaxos" pidfile)))
 
+(def sockets
+  "The replicas' TCP connections, peers', clients' and the master's, every
+  10 s."
+  {:log     sockets-log
+   :pidfile (str dir "/sockets.pid")
+   :flags   "-tin"
+   :ports   [replica-port (+ replica-port 1000)]})
+
 (defrecord DB [master warm-up]
   db/DB
   (setup! [this test node]
@@ -155,6 +173,7 @@
       (c/exec :chmod :+x binary)
       (c/upload [(str (control-dir test) "/swiftpaxos.conf")] config-file))
     (start! test node)
+    (sockets/start! sockets)
     ; A replica connects to its peers once every replica has registered
     ; with the master.
     (await-log! "done connecting to peers" 120000 "peers connected")
@@ -167,6 +186,7 @@
 
   (teardown! [this test node]
     (meh (kill! test node))
+    (sockets/stop! sockets)
     (c/su (c/exec :rm :-rf dir))
     (locking master
       (when-let [p @master]
@@ -175,7 +195,8 @@
 
   db/LogFiles
   (log-files [this test node]
-    {logfile "replica.log"})
+    {logfile     "replica.log"
+     sockets-log "sockets.log"})
 
   db/Process
   (start! [this test node] (start! test node))

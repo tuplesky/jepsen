@@ -48,6 +48,12 @@ modification revision. If the guard fails, the result is `fail`.
 Every test also runs a crash check: any `panicked at` in a voter's
 `coordd.log` fails the test even if the history is clean.
 
+Each node also keeps `ss -uanm` snapshots of its voter's API and peer
+sockets, every 10 s, in `sockets.log` (`jepsen.tuplesky.sockets`), which
+Jepsen collects with `coordd.log`: a send queue that stops draining under a
+partition shows there. The SwiftPaxos baseline keeps the same for its TCP
+connections.
+
 ## Faults
 
 `--nemesis` takes a comma-separated list of `kill`, `pause`, `partition` and

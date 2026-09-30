@@ -55,8 +55,22 @@ listener, which exits on the first peer message ("received unknown client
 message"). One kill and restart of one replica has been seen to end every
 replica in a three-node cluster this way.
 
-The master pings without a timeout, so a paused leader is not replaced: the
-cluster waits for it to resume.
+The master pings replicas without a timeout, in a sequential loop, so a
+paused **or partitioned** leader is not replaced: the cluster waits for it to
+resume or for the partition to heal.
+
+A partition also stalls a replica's sends toward the cut peer within tens of
+seconds. Each replica flushes its peers' sockets from one sender under its
+global lock, with no write deadline, so once the send buffer toward a cut
+peer fills, every send from that replica, acks and client replies alike,
+waits on TCP's backed-off retransmit timer. So `ok` counts under a partition
+measure TCP's timers, not the protocol. Each node's `ss -tin` snapshots,
+every 10 s in `sockets.log` beside `replica.log`, show it: Send-Q and the
+retransmit timer on the connections toward the cut peers. The TupleSky test
+keeps the same snapshots of its voters' UDP sockets.
+
+Each shim session's client log is kept only with `--shim-logs`; the shims'
+stderr goes to `control/shims.err`.
 
 ## Running it
 
