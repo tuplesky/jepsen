@@ -16,7 +16,7 @@ concurrency.
 | `swiftpaxos-jepsen` | control node, one per Jepsen process | a session of the upstream SwiftPaxos client, answering JSON lines |
 
 The shim is `cmd/swiftpaxos-jepsen` in
-[agentsky/swiftpaxos](https://github.com/agentsky/swiftpaxos), a fork of
+[tuplesky/swiftpaxos](https://github.com/tuplesky/swiftpaxos), a fork of
 SwiftPaxos that adds only it. `build.sh [DIR]` builds both binaries from the
 fork at a pinned commit (`SWIFTPAXOS_REPO` and `SWIFTPAXOS_REF` override
 it), statically, into `bin` by default.

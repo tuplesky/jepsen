@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build SwiftPaxos and its Jepsen client, swiftpaxos-jepsen, into DIR from
-# the agentsky/swiftpaxos fork at a pinned commit: upstream
+# the tuplesky/swiftpaxos fork at a pinned commit: upstream
 # (imdea-software/swiftpaxos) plus cmd/swiftpaxos-jepsen.
 #
 #   build.sh [DIR]     (default: bin, next to this script)
@@ -10,8 +10,8 @@
 # the Debian nodes whatever their C library.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-REPO=${SWIFTPAXOS_REPO:-https://github.com/agentsky/swiftpaxos}
-# agentsky/swiftpaxos#1: upstream 35c6936 plus cmd/swiftpaxos-jepsen.
+REPO=${SWIFTPAXOS_REPO:-https://github.com/tuplesky/swiftpaxos}
+# tuplesky/swiftpaxos#1: upstream 35c6936 plus cmd/swiftpaxos-jepsen.
 REF=${SWIFTPAXOS_REF:-24a7be183017a4e23f08aee98c8cfa24de2c6e2f}
 OUT=${1:-$HERE/bin}
 mkdir -p "$OUT"
