@@ -15,9 +15,11 @@ concurrency.
 | `swiftpaxos -run server` | every node | one replica, in memory, from `/opt/swiftpaxos` |
 | `swiftpaxos-jepsen` | control node, one per Jepsen process | a session of the upstream SwiftPaxos client, answering JSON lines |
 
-`shim/` holds the client shim, a Go module that pins the SwiftPaxos version
-(`go.mod`); `shim/build.sh [DIR]` builds both binaries from it, statically,
-into `shim/bin` by default.
+The shim is `cmd/swiftpaxos-jepsen` in
+[agentsky/swiftpaxos](https://github.com/agentsky/swiftpaxos), a fork of
+SwiftPaxos that adds only it. `build.sh [DIR]` builds both binaries from the
+fork at a pinned commit (`SWIFTPAXOS_REPO` and `SWIFTPAXOS_REF` override
+it), statically, into `bin` by default.
 
 The master runs on the control node, outside the nodes, so no fault reaches
 it; the replicas reach it at the address the control node reaches the first
@@ -60,9 +62,9 @@ cluster waits for it to resume.
 
 ```sh
 (cd ../jepsen && lein install)
-shim/build.sh
+./build.sh
 ../tuplesky/docker/up.sh --nodes 5 --dir /tmp/cluster
-docker/smoke.sh --bin-dir shim/bin --dir /tmp/cluster
+docker/smoke.sh --bin-dir bin --dir /tmp/cluster
 lein run test --nodes-file /tmp/cluster/nodes \
   --ssh-private-key /tmp/cluster/id_ed25519 --username root \
   --nemesis pause,partition --time-limit 300 --concurrency 2n

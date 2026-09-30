@@ -128,8 +128,8 @@
 
 (def cli-opts
   "Command line options."
-  [[nil "--bin-dir DIR" "Directory holding swiftpaxos and swiftpaxos-jepsen built for the nodes' and this machine's platform (see shim/build.sh)."
-    :default "shim/bin"
+  [[nil "--bin-dir DIR" "Directory holding swiftpaxos and swiftpaxos-jepsen built for the nodes' and this machine's platform (see build.sh)."
+    :default "bin"
     :parse-fn #(.getCanonicalPath (io/file %))]
 
    [nil "--master-host HOST" "Where the replicas reach the master on this machine. Default: the address this machine reaches the first node from."

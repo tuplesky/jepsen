@@ -1,6 +1,7 @@
 (ns jepsen.swiftpaxos.client
-  "A Jepsen client that drives SwiftPaxos through `swiftpaxos-jepsen`, the
-  shim in ../shim.
+  "A Jepsen client that drives SwiftPaxos through `swiftpaxos-jepsen`, a
+  client shim in the agentsky/swiftpaxos fork (cmd/swiftpaxos-jepsen), built by
+  build.sh in this project.
 
   Each Jepsen process runs one shim on the control node, a session of the
   upstream SwiftPaxos client with the node's replica as its closest. It
