@@ -11,8 +11,9 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=${SWIFTPAXOS_REPO:-https://github.com/tuplesky/swiftpaxos}
-# tuplesky/swiftpaxos#1: upstream 35c6936 plus cmd/swiftpaxos-jepsen.
-REF=${SWIFTPAXOS_REF:-24a7be183017a4e23f08aee98c8cfa24de2c6e2f}
+# tuplesky/swiftpaxos#1 (its review fixes included): upstream 35c6936 plus
+# cmd/swiftpaxos-jepsen.
+REF=${SWIFTPAXOS_REF:-d12fe7298be023f80195f7e90a156d227cb3ce94}
 OUT=${1:-$HERE/bin}
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
