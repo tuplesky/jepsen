@@ -241,16 +241,25 @@
               (fn [_ node]
                 (c/su (util/meh (c/exec :tc :qdisc :del :dev (devs node) :root))))))
 
+(defn ahosts-ipv4
+  "The IPv4 addresses in `getent ahostsv4` output, in the resolver's order,
+  without loopback ones, or nil when none is left. A hand-written
+  /etc/hosts can map a peer's name to 127.x (Debian's 127.0.1.1 line is the
+  usual one, and jepsen.control.net/ip falls back from it the same way);
+  taking it would route the shaping through `lo`, away from the traffic."
+  [out]
+  (->> (str/split-lines (or out ""))
+       (keep #(re-find #"^\d+\.\d+\.\d+\.\d+" %))
+       (remove #(str/starts-with? % "127."))
+       distinct
+       seq))
+
 (defn resolve-ipv4
-  "The IPv4 addresses `host` resolves to on the current node, in the
-  resolver's order, or nil when it resolves to none."
+  "The IPv4 addresses `host` resolves to on the current node, as
+  ahosts-ipv4 reads them, or nil when it resolves to none."
   [host]
-  (let [out (try (c/exec :getent :ahostsv4 host)
-                 (catch RuntimeException _ ""))]
-    (->> (str/split-lines out)
-         (keep #(re-find #"^\d+\.\d+\.\d+\.\d+" %))
-         distinct
-         seq)))
+  (ahosts-ipv4 (try (c/exec :getent :ahostsv4 host)
+                    (catch RuntimeException _ ""))))
 
 (defn learn
   "What the shaping needs from the nodes: on each node, the addresses its
@@ -300,7 +309,9 @@
   "Round trips in milliseconds: from the first node to each other node,
   and from each node to the control node (where only the node's side is
   shaped, so it is the clients' round trip); logged, so a run shows that
-  the shaping took. As [[from to measured profile] ...]."
+  the shaping took. A peer is pinged at the first address its name
+  resolves to on the first node, the one a dial by name takes first. As
+  [[from to measured profile] ...]."
   [test wan {:keys [ips control-ips]}]
   (let [nodes        (:nodes test)
         [a & others] nodes
