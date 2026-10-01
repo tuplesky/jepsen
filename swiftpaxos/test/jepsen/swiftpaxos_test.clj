@@ -16,7 +16,13 @@
     (is (= "swiftpaxos register pause,partition"
            (:name (s/swiftpaxos-test (assoc base :nemesis [:pause :partition])))))
     (is (= "swiftpaxos register none"
-           (:name (s/swiftpaxos-test (assoc base :nemesis []))))))
+           (:name (s/swiftpaxos-test (assoc base :nemesis [])))))
+    (is (= "swiftpaxos register packet wan-regions"
+           (:name (s/swiftpaxos-test (assoc base :nemesis [:packet]
+                                                 :wan {:kind :regions}))))))
+  (testing "a rate of 0 leaves the generator unthrottled"
+    (let [g (repeat {:f :read})]
+      (is (identical? g (s/throttle 0 g)))))
   (testing "none parses to no faults"
     (is (= [] (s/parse-nemesis-spec "none")))
     (is (= [:pause :partition] (s/parse-nemesis-spec "pause,partition")))))

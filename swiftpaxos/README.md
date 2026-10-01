@@ -45,10 +45,23 @@ Every test also runs a crash check: a Go panic, or one of the upstream
 replica's fatal-exit messages, in a replica's `replica.log` fails the test
 even if the history is clean.
 
+## Throughput and a simulated WAN
+
+As in the TupleSky test, `--rate 0` takes the throttle off, so with
+`--nemesis none` a run measures the most the cluster sustains at
+`--concurrency`; and `--wan regions` or `--wan MILLISECONDS` delays the
+traffic between replicas, with `packet` faults on top
+(`jepsen.tuplesky.wan`; see the TupleSky test's README). The clients sit
+beside the first replica by default (`--wan-clients first`), so a client
+waits on its round trip to each replica of the quorum that answers it;
+with `--wan-clients local` the fast path costs no WAN round trip at all
+(1 ms in the first runs). The master, on the control node, is delayed as
+the clients are.
+
 ## Faults
 
-`--nemesis` takes a comma-separated list of `kill`, `pause` and `partition`,
-or `none`. Use `pause,partition`: SwiftPaxos is an in-memory prototype that
+`--nemesis` takes a comma-separated list of `kill`, `pause`, `partition`
+and `packet`, or `none`. Use `pause,partition`: SwiftPaxos is an in-memory prototype that
 does not recover a replica that stops. A killed replica restarts empty and
 cannot rejoin; its new peer connections reach the other replicas' client
 listener, which exits on the first peer message ("received unknown client
