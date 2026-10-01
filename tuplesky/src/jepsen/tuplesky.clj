@@ -68,8 +68,9 @@
    [:pause]
    [:partition]
    [:clock]
+   [:packet]
    [:kill :partition]
-   [:pause :kill :partition :clock]])
+   [:pause :kill :partition :clock :packet]])
 
 (defn parse-nemesis-spec
   "Parses a comma-separated list of faults; `none` is no faults."

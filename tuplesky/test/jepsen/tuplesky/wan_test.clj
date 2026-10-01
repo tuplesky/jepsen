@@ -106,8 +106,20 @@
   (testing "no profile and no fault: no bands, an unshaped node"
     (is (= [] (wan/bands nil nodes nil "n1")))))
 
+(deftest reads-getent-addresses
+  (let [out (str "10.0.0.2        STREAM n2\n10.0.0.2        DGRAM\n"
+                 "10.0.0.2        RAW\n10.1.0.2        STREAM\n")]
+    (is (= ["10.0.0.2" "10.1.0.2"] (wan/ahosts-ipv4 out))
+        "each address once, in the resolver's order"))
+  (testing "a loopback answer is no answer: the peer's own address stands in"
+    (is (nil? (wan/ahosts-ipv4 "127.0.1.1       STREAM n2\n127.0.1.1       DGRAM\n")))
+    (is (= ["10.0.0.2"]
+           (wan/ahosts-ipv4 "127.0.1.1       STREAM n2\n10.0.0.2        STREAM\n"))))
+  (is (nil? (wan/ahosts-ipv4 "")))
+  (is (nil? (wan/ahosts-ipv4 nil))))
+
 (deftest tc-commands
-  (let [ips {"n2" "10.0.0.2", "n3" "10.0.0.3", "n4" "10.0.0.4"}
+  (let [ips {"n2" ["10.0.0.2"], "n3" ["10.0.0.3"], "n4" ["10.0.0.4"]}
         cmds (wan/tc-commands "eth0" ips [[[:delay "33ms"] ["n2" "n4"]]
                                           [[:delay "37ms"] ["n3"]]])]
     (is (= (into [:qdisc :add :dev "eth0" :root :handle "1:" :prio :bands 5 :priomap]
@@ -122,6 +134,14 @@
             [:filter :add :dev "eth0" :parent "1:0" :protocol :ip :prio 3 :u32
              :match :ip :dst "10.0.0.3/32" :flowid "1:5"]]
            (rest cmds))))
+  (testing "a peer that resolves to two addresses gets a filter for each"
+    (is (= [[:filter :add :dev "eth0" :parent "1:0" :protocol :ip :prio 3 :u32
+             :match :ip :dst "10.0.0.2/32" :flowid "1:4"]
+            [:filter :add :dev "eth0" :parent "1:0" :protocol :ip :prio 3 :u32
+             :match :ip :dst "10.1.0.2/32" :flowid "1:4"]]
+           (filter #(= :filter (first %))
+                   (wan/tc-commands "eth0" {"n2" ["10.0.0.2" "10.1.0.2"]}
+                                    [[[:delay "33ms"] ["n2"]]])))))
   (is (nil? (wan/tc-commands "eth0" {} []))))
 
 (def opts

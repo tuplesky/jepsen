@@ -185,8 +185,9 @@
 
 (defn tc-commands
   "The tc commands that give a node's device its bands; each is a vector of
-  arguments to tc. Removing the root qdisc comes first and is left to the
-  caller, since it fails when there is none."
+  arguments to tc. `ips` maps each peer to the addresses this node reaches
+  it at, one filter each. Removing the root qdisc comes first and is left
+  to the caller, since it fails when there is none."
   [dev ips node-bands]
   (when (seq node-bands)
     (assert (<= (+ 3 (count node-bands)) 16) "a prio qdisc has 16 bands")
@@ -200,9 +201,9 @@
                 (into [(into [:qdisc :add :dev dev :parent (str "1:" band)
                               :handle (str (+ 10 band) ":") :netem]
                              args)]
-                      (for [peer peers]
+                      (for [peer peers, ip (ips peer)]
                         [:filter :add :dev dev :parent "1:0" :protocol :ip
-                         :prio 3 :u32 :match :ip :dst (str (ips peer) "/32")
+                         :prio 3 :u32 :match :ip :dst (str ip "/32")
                          :flowid (str "1:" band)]))))
             node-bands))))
 
@@ -222,7 +223,7 @@
     (c/on-nodes test
                 (fn [_ node]
                   (let [dev  (devs node)
-                        ips' (assoc ips :control (control-ips node))
+                        ips' (assoc (ips node) :control [(control-ips node)])
                         bs   (bands wan nodes fault node)]
                     (c/su
                       (try (apply-bands! dev ips' bs)
@@ -240,11 +241,42 @@
               (fn [_ node]
                 (c/su (util/meh (c/exec :tc :qdisc :del :dev (devs node) :root))))))
 
+(defn ahosts-ipv4
+  "The IPv4 addresses in `getent ahostsv4` output, in the resolver's order,
+  without loopback ones, or nil when none is left. A hand-written
+  /etc/hosts can map a peer's name to 127.x (Debian's 127.0.1.1 line is the
+  usual one, and jepsen.control.net/ip falls back from it the same way);
+  taking it would route the shaping through `lo`, away from the traffic."
+  [out]
+  (->> (str/split-lines (or out ""))
+       (keep #(re-find #"^\d+\.\d+\.\d+\.\d+" %))
+       (remove #(str/starts-with? % "127."))
+       distinct
+       seq))
+
+(defn resolve-ipv4
+  "The IPv4 addresses `host` resolves to on the current node, as
+  ahosts-ipv4 reads them, or nil when it resolves to none."
+  [host]
+  (ahosts-ipv4 (try (c/exec :getent :ahostsv4 host)
+                    (catch RuntimeException _ ""))))
+
 (defn learn
-  "Each node's address, the device it reaches its peers through, and the
-  control node's address as the node sees it (its SSH client)."
+  "What the shaping needs from the nodes: on each node, the addresses its
+  peers resolve to there (which is how the systems dial them, by name),
+  falling back to the peer's own first address; the device it reaches them
+  through; and the control node's address as the node sees it (its SSH
+  client). As {:ips {node {peer [ip ...]}} :devs {node dev} :control-ips
+  {node ip}}."
   [test]
-  (let [ips  (into {} (c/on-nodes test (fn [_ _] (cn/local-ip))))
+  (let [own  (into {} (c/on-nodes test (fn [_ _] (cn/local-ip))))
+        ips  (into {} (c/on-nodes
+                        test
+                        (fn [_ node]
+                          (into {}
+                                (for [peer (:nodes test) :when (not= peer node)]
+                                  [peer (vec (or (resolve-ipv4 peer)
+                                                 [(own peer)]))])))))
         control-ips (into {} (c/on-nodes
                                test
                                (fn [_ _]
@@ -253,8 +285,7 @@
         devs (into {} (c/on-nodes
                         test
                         (fn [_ node]
-                          (let [peer (some (fn [[n ip]] (when (not= n node) ip))
-                                           ips)
+                          (let [peer  (first (mapcat val (ips node)))
                                 route (if peer
                                         (c/exec :ip :-o :route :get peer)
                                         (c/exec :ip :-o :route :show :default))]
@@ -278,14 +309,17 @@
   "Round trips in milliseconds: from the first node to each other node,
   and from each node to the control node (where only the node's side is
   shaped, so it is the clients' round trip); logged, so a run shows that
-  the shaping took. As [[from to measured profile] ...]."
+  the shaping took. A peer is pinged at the first address its name
+  resolves to on the first node, the one a dial by name takes first. As
+  [[from to measured profile] ...]."
   [test wan {:keys [ips control-ips]}]
   (let [nodes        (:nodes test)
         [a & others] nodes
         peers   (when (seq others)
                   (get (c/on-nodes test [a]
                                    (fn [_ _]
-                                     (mapv (fn [b] [b (ping-ms (ips b))]) others)))
+                                     (mapv (fn [b] [b (ping-ms (first (get-in ips [a b])))])
+                                           others)))
                        a))
         clients (c/on-nodes test (fn [_ node] (ping-ms (control-ips node))))]
     (concat
