@@ -107,7 +107,7 @@
     (is (= [] (wan/bands nil nodes nil "n1")))))
 
 (deftest tc-commands
-  (let [ips {"n2" "10.0.0.2", "n3" "10.0.0.3", "n4" "10.0.0.4"}
+  (let [ips {"n2" ["10.0.0.2"], "n3" ["10.0.0.3"], "n4" ["10.0.0.4"]}
         cmds (wan/tc-commands "eth0" ips [[[:delay "33ms"] ["n2" "n4"]]
                                           [[:delay "37ms"] ["n3"]]])]
     (is (= (into [:qdisc :add :dev "eth0" :root :handle "1:" :prio :bands 5 :priomap]
@@ -122,6 +122,14 @@
             [:filter :add :dev "eth0" :parent "1:0" :protocol :ip :prio 3 :u32
              :match :ip :dst "10.0.0.3/32" :flowid "1:5"]]
            (rest cmds))))
+  (testing "a peer that resolves to two addresses gets a filter for each"
+    (is (= [[:filter :add :dev "eth0" :parent "1:0" :protocol :ip :prio 3 :u32
+             :match :ip :dst "10.0.0.2/32" :flowid "1:4"]
+            [:filter :add :dev "eth0" :parent "1:0" :protocol :ip :prio 3 :u32
+             :match :ip :dst "10.1.0.2/32" :flowid "1:4"]]
+           (filter #(= :filter (first %))
+                   (wan/tc-commands "eth0" {"n2" ["10.0.0.2" "10.1.0.2"]}
+                                    [[[:delay "33ms"] ["n2"]]])))))
   (is (nil? (wan/tc-commands "eth0" {} []))))
 
 (def opts

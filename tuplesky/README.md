@@ -112,7 +112,9 @@ back on the profile first.
 Jepsen's own packet nemesis cannot be used under a profile: it gives each
 node one netem queue and clears the rest, so a fault would erase the WAN.
 This one gives each node a prio qdisc with a netem band per distinct
-delay among its peers. The nodes need `tc` (iproute2) and a kernel with
+delay among its peers, and a u32 filter for each address a peer's name
+resolves to on that node (`getent ahostsv4`), since the systems dial their
+peers by name. The nodes need `tc` (iproute2) and a kernel with
 `sch_prio`, `sch_netem` and `cls_u32`.
 
 ```sh

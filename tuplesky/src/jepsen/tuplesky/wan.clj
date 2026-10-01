@@ -185,8 +185,9 @@
 
 (defn tc-commands
   "The tc commands that give a node's device its bands; each is a vector of
-  arguments to tc. Removing the root qdisc comes first and is left to the
-  caller, since it fails when there is none."
+  arguments to tc. `ips` maps each peer to the addresses this node reaches
+  it at, one filter each. Removing the root qdisc comes first and is left
+  to the caller, since it fails when there is none."
   [dev ips node-bands]
   (when (seq node-bands)
     (assert (<= (+ 3 (count node-bands)) 16) "a prio qdisc has 16 bands")
@@ -200,9 +201,9 @@
                 (into [(into [:qdisc :add :dev dev :parent (str "1:" band)
                               :handle (str (+ 10 band) ":") :netem]
                              args)]
-                      (for [peer peers]
+                      (for [peer peers, ip (ips peer)]
                         [:filter :add :dev dev :parent "1:0" :protocol :ip
-                         :prio 3 :u32 :match :ip :dst (str (ips peer) "/32")
+                         :prio 3 :u32 :match :ip :dst (str ip "/32")
                          :flowid (str "1:" band)]))))
             node-bands))))
 
@@ -222,7 +223,7 @@
     (c/on-nodes test
                 (fn [_ node]
                   (let [dev  (devs node)
-                        ips' (assoc ips :control (control-ips node))
+                        ips' (assoc (ips node) :control [(control-ips node)])
                         bs   (bands wan nodes fault node)]
                     (c/su
                       (try (apply-bands! dev ips' bs)
@@ -240,11 +241,33 @@
               (fn [_ node]
                 (c/su (util/meh (c/exec :tc :qdisc :del :dev (devs node) :root))))))
 
+(defn resolve-ipv4
+  "The IPv4 addresses `host` resolves to on the current node, in the
+  resolver's order, or nil when it resolves to none."
+  [host]
+  (let [out (try (c/exec :getent :ahostsv4 host)
+                 (catch RuntimeException _ ""))]
+    (->> (str/split-lines out)
+         (keep #(re-find #"^\d+\.\d+\.\d+\.\d+" %))
+         distinct
+         seq)))
+
 (defn learn
-  "Each node's address, the device it reaches its peers through, and the
-  control node's address as the node sees it (its SSH client)."
+  "What the shaping needs from the nodes: on each node, the addresses its
+  peers resolve to there (which is how the systems dial them, by name),
+  falling back to the peer's own first address; the device it reaches them
+  through; and the control node's address as the node sees it (its SSH
+  client). As {:ips {node {peer [ip ...]}} :devs {node dev} :control-ips
+  {node ip}}."
   [test]
-  (let [ips  (into {} (c/on-nodes test (fn [_ _] (cn/local-ip))))
+  (let [own  (into {} (c/on-nodes test (fn [_ _] (cn/local-ip))))
+        ips  (into {} (c/on-nodes
+                        test
+                        (fn [_ node]
+                          (into {}
+                                (for [peer (:nodes test) :when (not= peer node)]
+                                  [peer (vec (or (resolve-ipv4 peer)
+                                                 [(own peer)]))])))))
         control-ips (into {} (c/on-nodes
                                test
                                (fn [_ _]
@@ -253,8 +276,7 @@
         devs (into {} (c/on-nodes
                         test
                         (fn [_ node]
-                          (let [peer (some (fn [[n ip]] (when (not= n node) ip))
-                                           ips)
+                          (let [peer  (first (mapcat val (ips node)))
                                 route (if peer
                                         (c/exec :ip :-o :route :get peer)
                                         (c/exec :ip :-o :route :show :default))]
@@ -285,7 +307,8 @@
         peers   (when (seq others)
                   (get (c/on-nodes test [a]
                                    (fn [_ _]
-                                     (mapv (fn [b] [b (ping-ms (ips b))]) others)))
+                                     (mapv (fn [b] [b (ping-ms (first (get-in ips [a b])))])
+                                           others)))
                        a))
         clients (c/on-nodes test (fn [_ node] (ping-ms (control-ips node))))]
     (concat
