@@ -10,12 +10,16 @@
   a start follows each kill within one interval, at most twice :interval
   seconds.
 
+  The network a test runs on, and its packet faults, come from
+  jepsen.tuplesky.wan instead of Jepsen's packet package (see wan-package).
+
   Depends on Jepsen alone, so the etcd baseline can load it too and both
   tests keep the same fault schedule."
   (:require [jepsen [db :as db]
                     [generator :as gen]
                     [random :as rand]]
-            [jepsen.nemesis.combined :as nc]))
+            [jepsen.nemesis.combined :as nc]
+            [jepsen.tuplesky.wan :as wan]))
 
 (defn db-package?
   "Whether a package from nc/nemesis-packages is the DB package, the one
@@ -73,8 +77,58 @@
              pkg))
          packages)))
 
+(def packet-targets
+  "Whose traffic a packet fault disrupts: to and from one node, a
+  minority, or every node."
+  [:one :minority :all])
+
+(defn wan-package
+  "The WAN nemesis (jepsen.tuplesky.wan) as a package: the network profile
+  :wan (parsed by wan/parse-spec; nil for none), and, when :faults has
+  :packet, packet faults on top of it, each from :packet's :behaviors
+  (wan/packet-behaviors) on :packet's :targets (packet-targets), staggered
+  by :interval. Nil when there is neither."
+  [opts]
+  (let [profile  (:wan opts)
+        packet?  (contains? (set (:faults opts)) :packet)
+        interval (:interval opts nc/default-interval)
+        targets  (:targets (:packet opts) packet-targets)
+        behaviors (:behaviors (:packet opts) wan/packet-behaviors)
+        start    (fn [_ _] {:type  :info
+                            :f     :start-packet
+                            :value [(rand/nth targets) (rand/nth behaviors)]})
+        stop     {:type :info, :f :stop-packet, :value nil}]
+    (when (or profile packet?)
+      {:nemesis         (wan/nemesis profile (:db opts))
+       :generator       (when packet?
+                          (stagger interval
+                                   (gen/flip-flop start (gen/repeat stop))))
+       :final-generator (when packet? stop)
+       :perf            #{{:name  "packet"
+                           :start #{:start-packet}
+                           :stop  #{:stop-packet}
+                           :color "#D1E8A0"}}})))
+
+(defn jepsen-packet-package?
+  "Whether a package from nc/nemesis-packages is Jepsen's packet package.
+  Its nemesis is there even without the fault, and clears every node's
+  shaping at setup."
+  [pkg]
+  (boolean (some #(= "packet" (:name %)) (:perf pkg))))
+
+(defn with-wan
+  "Takes nemesis-package opts and the packages nc/nemesis-packages made from
+  them, and puts wan-package in place of Jepsen's packet package when
+  there is a profile or the packet fault. Unchanged otherwise."
+  [opts packages]
+  (if-let [pkg (wan-package opts)]
+    (conj (vec (remove jepsen-packet-package? packages)) pkg)
+    packages))
+
 (defn nemesis-package
-  "nc/nemesis-package, with the DB package's faults separated."
+  "nc/nemesis-package, with the DB package's faults separated, and the
+  network from jepsen.tuplesky.wan."
   [opts]
   (let [opts (update opts :faults set)]
-    (nc/compose-packages (separate-db-faults opts (nc/nemesis-packages opts)))))
+    (nc/compose-packages
+      (with-wan opts (separate-db-faults opts (nc/nemesis-packages opts))))))

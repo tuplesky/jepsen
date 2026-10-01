@@ -43,7 +43,10 @@ modification revision. If the guard fails, the result is `fail`.
 | `wr` | Elle rw-register, strict serializability | transactions of writes and reads over 3 keys |
 | `register` | Knossos, linearizability per key | read, write, compare-and-set on independent keys |
 
-`register` uses 2 workers per node per key: run it with `--concurrency 2n`.
+`register` uses 2 workers per node per key: run it with `--concurrency 2n`
+or a multiple of it. Each register gets about `--per-key-limit` operations
+(100) before the workers move on to a new one, which keeps Knossos's
+search short.
 
 Every test also runs a crash check: any `panicked at` in a voter's
 `coordd.log` fails the test even if the history is clean.
@@ -54,10 +57,60 @@ Jepsen collects with `coordd.log`: a send queue that stops draining under a
 partition shows there. The SwiftPaxos baseline keeps the same for its TCP
 connections.
 
+## Throughput
+
+`--rate 0` takes the throttle off: each worker issues its next operation as
+soon as the last completes, so the `ok` rate is what the domain sustains at
+`--concurrency`. With `--nemesis none` that is a maximum-throughput test,
+still checked like any other run. The register workload compares across
+systems best, since its keys do not contend:
+
+```sh
+lein run test --nodes-file ~/nodes --workload register --nemesis none \
+  --rate 0 --concurrency 10n --time-limit 120
+```
+
+## A simulated WAN
+
+`--wan` puts a wide-area network between the nodes, with tc netem on each
+node's egress (`jepsen.tuplesky.wan`):
+
+- `--wan regions`: three regions, nodes placed round-robin in `--nodes`
+  order (`n1` us-east, `n2` us-west, `n3` eu-west, `n4` us-east, ...). One
+  way, us-east to us-west is 33 ms, us-east to eu-west 37 ms, and us-west
+  to eu-west 65 ms: about half the round trips between AWS us-east-1,
+  us-west-2 and eu-west-1. Nodes in one region are 1 ms apart.
+- `--wan 50`: 50 ms one way between every two nodes.
+
+The delays hold for the whole test, final reads included; they are the
+network, not a fault. Traffic between a node and the control node, where
+the clients run, is not delayed: each client sits next to its node. At
+setup the nemesis logs each node's region and the round trip it measures
+from the first node to each other, and warns when one is short of the
+profile.
+
+The `packet` fault disrupts packets on top of that network, to and from
+one node, a minority or every node, for a while: 1% or 5% loss, 50 ms more
+delay with 25 ms of jitter (which reorders), 5% reordering, 2%
+duplication, 1% corruption, or a 10 Mbit/s cap. Stopping it, and the final
+heal, go back to the profile, not to an unshaped network.
+
+Jepsen's own packet nemesis cannot be used under a profile: it gives each
+node one netem queue and clears the rest, so a fault would erase the WAN.
+This one gives each node a prio qdisc with a netem band per distinct
+delay among its peers. The nodes need `tc` (iproute2) and a kernel with
+`sch_prio`, `sch_netem` and `cls_u32`.
+
+```sh
+lein run test --nodes-file ~/nodes --wan regions --nemesis packet,partition \
+  --time-limit 300
+```
+
 ## Faults
 
-`--nemesis` takes a comma-separated list of `kill`, `pause`, `partition` and
-`clock`, or `none`. Jepsen's combined nemesis package drives them.
+`--nemesis` takes a comma-separated list of `kill`, `pause`, `partition`,
+`clock` and `packet` (see above), or `none`. Jepsen's combined nemesis
+package drives them, except `packet`.
 
 Kills and pauses run on schedules of their own (`jepsen.tuplesky.nemesis`):
 each is a flip-flop, kill then start or pause then resume, staggered by
@@ -127,7 +180,8 @@ docker/down.sh --dir docker-cluster
 The containers share the host's kernel and clock. Leave `clock` out of
 `--nemesis` here, since a clock fault would move every node's clock and
 the control node's together. The containers get `NET_ADMIN` for
-partitions and nothing more.
+partitions and `--wan` shaping, and nothing more; the host's kernel must
+have netem (`sudo modprobe sch_netem sch_prio cls_u32`).
 
 The TupleSky repository's `jepsen` workflow does exactly this on a GitHub
 runner.
@@ -142,7 +196,9 @@ Useful options:
 | `--budget-ms` | 10000 | how long an operation may take before it is `info` |
 | `--nemesis-interval` | 30 | seconds between fault operations |
 | `--recovery-time` | 60 | seconds to wait after healing, before the final reads |
-| `--rate` | 20 | operations per second |
+| `--rate` | 20 | operations per second; 0 for unthrottled |
+| `--per-key-limit` | 100 | operations per register, in the register workload |
+| `--wan` | none | `regions`, or one-way milliseconds between every two nodes |
 
 The UDP ports must be open between nodes, and from the control node to every
 node's API port.

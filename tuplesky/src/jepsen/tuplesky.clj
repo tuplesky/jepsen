@@ -20,7 +20,8 @@
             [jepsen.tests.linearizable-register :as lr]
             [jepsen.tuplesky [client :as client]
                              [db :as db]
-                             [nemesis :as tn]]
+                             [nemesis :as tn]
+                             [wan :as wan]]
             [knossos.model :as model]))
 
 (defn append-workload
@@ -45,8 +46,9 @@
   "Linearizable reads, writes and compare-and-set on independent
   registers, checked by Knossos."
   [opts]
-  (assoc (lr/test {:nodes (:nodes opts)
-                   :model (model/cas-register)})
+  (assoc (lr/test {:nodes         (:nodes opts)
+                   :model         (model/cas-register)
+                   :per-key-limit (:per-key-limit opts)})
          :client (client/client)))
 
 (def workloads
@@ -55,8 +57,9 @@
    :register register-workload})
 
 (def nemeses
-  "Faults we know how to inject."
-  #{:kill :pause :partition :clock})
+  "Faults we know how to inject. :packet disrupts packets on top of the
+  --wan profile (see jepsen.tuplesky.wan)."
+  #{:kill :pause :partition :clock :packet})
 
 (def all-nemeses
   "Combinations of faults test-all runs."
@@ -74,6 +77,29 @@
   (if (= "none" spec)
     []
     (mapv keyword (str/split spec #","))))
+
+(defn throttle
+  "Staggers a generator to about rate operations a second; a rate of 0
+  leaves it unthrottled, so each client issues its next operation as soon
+  as the last completes, and the throughput is what the system sustains at
+  that concurrency."
+  [rate gen]
+  (if (pos? rate)
+    (gen/stagger (/ rate) gen)
+    gen))
+
+(defn test-name
+  "The test's name, which names its store directory: the system, workload,
+  faults, and the WAN profile when there is one."
+  [system opts]
+  (str system " " (name (:workload opts)) " "
+       (if (seq (:nemesis opts))
+         (str/join "," (map name (:nemesis opts)))
+         "none")
+       (when-let [w (:wan opts)]
+         (str " wan-" (if (= :uniform (:kind w))
+                        (str (:delay-ms w) "ms")
+                        (name (:kind w)))))))
 
 (defn run-dir
   "Where the domain is provisioned on the control node. Absolute, and new
@@ -98,10 +124,11 @@
                          :partition {:targets [:one :majority :majorities-ring]}
                          :pause     {:targets [:one :majority]}
                          :kill      {:targets [:one :majority :all]}
+                         :wan       (:wan opts)
                          :interval  (:nemesis-interval opts)})
         wrap          (:wrap-generator workload identity)
         gen           (->> (:generator workload)
-                           (gen/stagger (/ (:rate opts)))
+                           (throttle (:rate opts))
                            (gen/nemesis (gen/phases (gen/sleep 5)
                                                     (:generator nemesis)))
                            (gen/time-limit (:time-limit opts)))
@@ -117,10 +144,7 @@
                         (gen/clients (:final-generator workload)))]
     (merge tests/noop-test
            opts
-           {:name            (str "tuplesky " (name workload-name) " "
-                                  (if (seq (:nemesis opts))
-                                    (str/join "," (map name (:nemesis opts)))
-                                    "none"))
+           {:name            (test-name "tuplesky" opts)
             :pure-generators true
             :os              debian/os
             :db              db
@@ -168,7 +192,7 @@
     :default 10000
     :parse-fn parse-long]
 
-   [nil "--nemesis FAULTS" "Comma-separated faults (kill, pause, partition, clock), or none."
+   [nil "--nemesis FAULTS" "Comma-separated faults (kill, pause, partition, clock, packet), or none."
     :default []
     :parse-fn parse-nemesis-spec
     :validate [(partial every? nemeses) (cli/one-of nemeses)]]
@@ -183,10 +207,19 @@
     :parse-fn read-string
     :validate [(complement neg?) "Must not be negative"]]
 
-   ["-r" "--rate HZ" "Approximate number of requests per second."
+   [nil "--per-key-limit N" "Roughly how many operations each register gets, in the register workload."
+    :default 100
+    :parse-fn parse-long
+    :validate [pos? "Must be positive"]]
+
+   ["-r" "--rate HZ" "Approximate number of requests per second, or 0 for as many as the clients can issue (a throughput test)."
     :default 20
     :parse-fn read-string
-    :validate [#(and (number? %) (pos? %)) "Must be a positive number"]]
+    :validate [#(and (number? %) (not (neg? %))) "Must be a number, 0 or more"]]
+
+   [nil "--wan PROFILE" "The network between the nodes: none, regions (three regions, 33 to 65 ms apart one way), or a one-way delay in milliseconds between every two nodes. See jepsen.tuplesky.wan."
+    :default nil
+    :parse-fn wan/parse-spec]
 
    ["-w" "--workload NAME" "What workload to run."
     :default :append
