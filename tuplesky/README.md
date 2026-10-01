@@ -83,17 +83,31 @@ node's egress (`jepsen.tuplesky.wan`):
 - `--wan 50`: 50 ms one way between every two nodes.
 
 The delays hold for the whole test, final reads included; they are the
-network, not a fault. Traffic between a node and the control node, where
-the clients run, is not delayed: each client sits next to its node. At
-setup the nemesis logs each node's region and the round trip it measures
-from the first node to each other, and warns when one is short of the
-profile.
+network, not a fault.
+
+The clients run on the control node. By default (`--wan-clients first`)
+they sit beside the first node, as a control node on real hosts sits in
+one region: each node's traffic to the control node is delayed by its
+round trip to the first node (only the nodes' egress is shaped, so the
+request arrives at once and the answer takes the whole round trip). With
+`--wan-clients local` that traffic is not shaped, as if every client sat
+beside the node it talks to. That flatters a protocol whose clients send
+to every replica: in the first WAN runs, SwiftPaxos's fast path answered in
+1 ms, its client-to-quorum round trip made free.
+
+At setup the nemesis logs each node's region, the round trip it measures
+from the first node to each other node, and from each node to the clients,
+and warns when one is short of the profile.
 
 The `packet` fault disrupts packets on top of that network, to and from
 one node, a minority or every node, for a while: 1% or 5% loss, 50 ms more
-delay with 25 ms of jitter (which reorders), 5% reordering, 2%
-duplication, 1% corruption, or a 10 Mbit/s cap. Stopping it, and the final
-heal, go back to the profile, not to an unshaped network.
+delay with 25 ms of jitter (which reorders), 5% reordering, 1%
+corruption, or a 10 Mbit/s cap; the clients' traffic is left to the
+profile. Stopping it, and the final heal, go back to the profile, not to an
+unshaped network. Not duplication: the kernel refuses a duplicating netem
+in a tree with other netems ("cannot mix duplicating netems with other
+netems in tree"). A fault whose tc commands fail on a node puts that node
+back on the profile first.
 
 Jepsen's own packet nemesis cannot be used under a profile: it gives each
 node one netem queue and clears the rest, so a fault would erase the WAN.
@@ -199,6 +213,7 @@ Useful options:
 | `--rate` | 20 | operations per second; 0 for unthrottled |
 | `--per-key-limit` | 100 | operations per register, in the register workload |
 | `--wan` | none | `regions`, or one-way milliseconds between every two nodes |
+| `--wan-clients` | first | under `--wan`, the clients beside the first node, or `local` beside each node |
 
 The UDP ports must be open between nodes, and from the control node to every
 node's API port.

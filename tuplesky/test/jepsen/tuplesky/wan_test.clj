@@ -10,11 +10,35 @@
 (deftest parses-the-profile
   (is (nil? (wan/parse-spec "none")))
   (is (nil? (wan/parse-spec nil)))
-  (is (= {:kind :regions} (wan/parse-spec "regions")))
-  (is (= {:kind :uniform, :delay-ms 50.0} (wan/parse-spec "50")))
-  (is (= {:kind :uniform, :delay-ms 2.5} (wan/parse-spec "2.5")))
+  (is (= {:kind :regions, :clients :first} (wan/parse-spec "regions")))
+  (is (= {:kind :uniform, :delay-ms 50.0, :clients :first} (wan/parse-spec "50")))
+  (is (= {:kind :uniform, :delay-ms 2.5, :clients :first} (wan/parse-spec "2.5")))
   (is (thrown? IllegalArgumentException (wan/parse-spec "mars")))
   (is (thrown? IllegalArgumentException (wan/parse-spec "-5"))))
+
+(deftest places-the-clients
+  (is (= :local (wan/parse-clients "local")))
+  (is (= :first (wan/parse-clients "first")))
+  (is (thrown? IllegalArgumentException (wan/parse-clients "mars")))
+  (is (= {:kind :regions, :clients :local}
+         (wan/with-clients {:kind :regions, :clients :first} :local)))
+  (is (= {:kind :regions, :clients :first}
+         (wan/with-clients {:kind :regions, :clients :first} nil)))
+  (is (nil? (wan/with-clients nil :local)) "no profile, nothing to place")
+  (let [w {:kind :regions, :clients :first}]
+    (testing "beside n1: each node's traffic to them takes its round trip to n1"
+      (is (= [0 66 74 2 66] (map (partial wan/client-delay-ms w nodes) nodes))))
+    (testing "local clients: no delay"
+      (is (= [0 0 0 0 0] (map (partial wan/client-delay-ms (assoc w :clients :local) nodes)
+                              nodes))))
+    (testing "n2's bands include the clients, beside n1"
+      (is (= [[[:delay "1ms"] ["n5"]]
+              [[:delay "33ms"] ["n1" "n4"]]
+              [[:delay "65ms"] ["n3"]]
+              [[:delay "66ms"] [:control]]]
+             (wan/bands w nodes nil "n2"))))
+    (testing "the first node has no band for them"
+      (is (not-any? #(some #{:control} (second %)) (wan/bands w nodes nil "n1"))))))
 
 (deftest places-nodes-in-regions-round-robin
   (is (= ["us-east" "us-west" "eu-west" "us-east" "us-west"]

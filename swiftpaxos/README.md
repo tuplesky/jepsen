@@ -51,8 +51,12 @@ As in the TupleSky test, `--rate 0` takes the throttle off, so with
 `--nemesis none` a run measures the most the cluster sustains at
 `--concurrency`; and `--wan regions` or `--wan MILLISECONDS` delays the
 traffic between replicas, with `packet` faults on top
-(`jepsen.tuplesky.wan`; see the TupleSky test's README). The master, on the
-control node, is not delayed.
+(`jepsen.tuplesky.wan`; see the TupleSky test's README). The clients sit
+beside the first replica by default (`--wan-clients first`), so a client
+waits on its round trip to each replica of the quorum that answers it;
+with `--wan-clients local` the fast path costs no WAN round trip at all
+(1 ms in the first runs). The master, on the control node, is delayed as
+the clients are.
 
 ## Faults
 

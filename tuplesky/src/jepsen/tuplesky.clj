@@ -99,7 +99,8 @@
        (when-let [w (:wan opts)]
          (str " wan-" (if (= :uniform (:kind w))
                         (str (:delay-ms w) "ms")
-                        (name (:kind w)))))))
+                        (name (:kind w)))
+              (when (= :local (:clients w)) "-local-clients")))))
 
 (defn run-dir
   "Where the domain is provisioned on the control node. Absolute, and new
@@ -112,7 +113,8 @@
 (defn tuplesky-test
   "Constructs a test from parsed CLI options."
   [opts]
-  (let [workload-name (:workload opts)
+  (let [opts          (update opts :wan wan/with-clients (:wan-clients opts))
+        workload-name (:workload opts)
         workload      ((workloads workload-name) opts)
         db            (db/db)
         ; Kill/start and pause/resume on their own schedules, so a start
@@ -220,6 +222,10 @@
    [nil "--wan PROFILE" "The network between the nodes: none, regions (three regions, 33 to 65 ms apart one way), or a one-way delay in milliseconds between every two nodes. See jepsen.tuplesky.wan."
     :default nil
     :parse-fn wan/parse-spec]
+
+   [nil "--wan-clients WHERE" "Where the clients sit under --wan: first (beside the first node, as a control node on real hosts sits in one region; the default) or local (beside each node they talk to)."
+    :default nil
+    :parse-fn wan/parse-clients]
 
    ["-w" "--workload NAME" "What workload to run."
     :default :append

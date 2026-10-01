@@ -32,6 +32,11 @@
            (:name (t/tuplesky-test (assoc base :workload :register
                                                :nemesis []
                                                :wan {:kind :regions})))))
+    (is (= "tuplesky append none wan-regions-local-clients"
+           (:name (t/tuplesky-test (assoc base :workload :append
+                                               :nemesis []
+                                               :wan {:kind :regions :clients :first}
+                                               :wan-clients :local)))))
     (is (= "tuplesky append none wan-50.0ms"
            (:name (t/tuplesky-test (assoc base :workload :append
                                                :nemesis []
@@ -45,8 +50,10 @@
     (let [parse #(cli/parse-opts % t/cli-opts)]
       (is (= 0 (:rate (:options (parse ["--rate" "0"])))))
       (is (seq (:errors (parse ["--rate" "-1"]))))
-      (is (= {:kind :regions} (:wan (:options (parse ["--wan" "regions"])))))
-      (is (= {:kind :uniform :delay-ms 40.0}
+      (is (= {:kind :regions :clients :first}
+             (:wan (:options (parse ["--wan" "regions"])))))
+      (is (= {:kind :uniform :delay-ms 40.0 :clients :first}
              (:wan (:options (parse ["--wan" "40"])))))
+      (is (= :local (:wan-clients (:options (parse ["--wan-clients" "local"])))))
       (is (nil? (:wan (:options (parse [])))))
       (is (seq (:errors (parse ["--wan" "mars"])))))))

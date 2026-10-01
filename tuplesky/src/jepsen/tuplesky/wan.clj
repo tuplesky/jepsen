@@ -8,19 +8,31 @@
   test, from the nemesis's setup to its teardown, through the final reads:
   they are the network the test runs on, not a fault.
 
+  The clients run on the control node. By default (:clients :first) they
+  sit beside the first node, as a Jepsen control node on real hosts sits in
+  one region: each node's traffic to the control node is delayed by its
+  whole round trip to the first node, since only the nodes' egress is
+  shaped. A request then reaches a node at once and its answer takes the
+  round trip, which is the same round trip a client in that region sees.
+  With :clients :local the control node's traffic is not shaped, as if
+  every client sat beside the node it talks to. That flatters a protocol
+  whose clients send to every replica (SwiftPaxos's fast path takes one
+  client round trip to a quorum, which :local makes free) against one whose
+  clients talk to one node.
+
   The packet fault (:start-packet and :stop-packet, as Jepsen's own packet
-  nemesis) adds one of `packet-behaviors` to the traffic to and from some
-  nodes for a while: loss, jitter (which reorders), duplication,
-  corruption or a bandwidth cap, on top of the profile's delay. Stopping it
-  goes back to the profile, not to an unshaped network.
+  nemesis) adds one of `packet-behaviors` to the traffic between nodes,
+  to and from some of them, for a while: loss, jitter (which reorders),
+  reordering, corruption or a bandwidth cap, on top of the profile's delay.
+  Stopping it goes back to the profile, not to an unshaped network. A fault
+  whose tc commands fail on a node puts that node back on the profile
+  before the failure is reported.
 
   Jepsen's own packet nemesis cannot do this: jepsen.net/shape! gives each
   node one netem queue, for its traffic to the targets, and clears the rest,
   so a fault would erase the WAN delays. Here each node gets a prio qdisc
   with one netem band per distinct behaviour among its peers, and a u32
-  filter per peer's address. Traffic to anything else, the control node and
-  so the clients included, stays unshaped: the clients sit next to the node
-  they talk to.
+  filter per peer's address.
 
   Depends on Jepsen alone, like jepsen.tuplesky.nemesis, so the etcd
   baseline can load it too."
@@ -46,33 +58,46 @@
 (def packet-behaviors
   "What a packet fault adds to the profile on the traffic to and from its
   targets. :delay-ms adds to the profile's delay; jitter reorders packets,
-  as netem does whenever it has jitter and no rate."
+  as netem does whenever it has jitter and no rate. Not duplication: the
+  kernel refuses a duplicating netem in a tree with other netems (\"netem:
+  cannot mix duplicating netems with other netems in tree\"), and a node
+  under a profile has one netem per delay."
   [{:loss "1%"}
    {:loss "5%" :loss-correlation "25%"}
    {:delay-ms 50 :jitter-ms 25}
    {:delay-ms 5 :reorder "5%"}
-   {:duplicate "2%"}
    {:corrupt "1%"}
    {:rate "10mbit"}])
 
 (defn parse-spec
   "Parses --wan: `none`, `regions`, or a one-way delay in milliseconds
-  between every two nodes."
+  between every two nodes. The clients sit beside the first node."
   [spec]
   (cond
     (or (nil? spec) (= "none" spec)) nil
-    (= "regions" spec)               {:kind :regions}
-    (re-matches #"\d+(\.\d+)?" spec) {:kind :uniform
-                                      :delay-ms (Double/parseDouble spec)}
+    (= "regions" spec)               {:kind :regions, :clients :first}
+    (re-matches #"\d+(\.\d+)?" spec) {:kind     :uniform
+                                      :delay-ms (Double/parseDouble spec)
+                                      :clients  :first}
     :else (throw (IllegalArgumentException.
                    (str "--wan must be none, regions or milliseconds, not "
                         (pr-str spec))))))
 
-(defn valid-spec?
-  "Whether --wan parses."
+(defn parse-clients
+  "Parses --wan-clients: `first` (beside the first node) or `local` (beside
+  each node they talk to)."
   [spec]
-  (try (parse-spec spec) true
-       (catch IllegalArgumentException _ false)))
+  (case spec
+    "first" :first
+    "local" :local
+    (throw (IllegalArgumentException.
+             (str "--wan-clients must be first or local, not " (pr-str spec))))))
+
+(defn with-clients
+  "The profile with its clients placed, when there is a profile and a
+  placement."
+  [wan clients]
+  (cond-> wan (and wan clients) (assoc :clients clients)))
 
 (defn region
   "The region index of a node: round-robin over :nodes, in their order."
@@ -95,6 +120,14 @@
               (:local regions)
               (get (:delay regions) #{a b})))))
 
+(defn client-delay-ms
+  "The delay on a node's traffic to the clients: its round trip to the
+  first node, with the clients beside it, and none with :local clients."
+  [wan nodes node]
+  (if (= :first (:clients wan))
+    (* 2 (base-delay-ms wan nodes node (first nodes)))
+    0))
+
 (defn behavior
   "What src's traffic to dst gets: the profile's delay, plus the fault's
   behaviour when either end is one of the fault's targets."
@@ -111,8 +144,7 @@
 
 (defn netem-args
   "The netem arguments for a behaviour, or nil when it changes nothing."
-  [{:keys [delay-ms jitter-ms loss loss-correlation reorder duplicate corrupt
-           rate]}]
+  [{:keys [delay-ms jitter-ms loss loss-correlation reorder corrupt rate]}]
   (let [delay-ms  (or delay-ms 0)
         jitter-ms (or jitter-ms 0)
         args (cond-> []
@@ -123,20 +155,23 @@
                loss      (into (cond-> [:loss loss]
                                  loss-correlation (conj loss-correlation)))
                reorder   (into [:reorder reorder])
-               duplicate (into [:duplicate duplicate])
                corrupt   (into [:corrupt corrupt])
                rate      (into [:rate rate]))]
     (when (seq args) args)))
 
 (defn bands
   "src's netem bands: one per distinct set of netem arguments among its
-  peers, as [args peers], in a stable order."
+  peers, as [args peers], in a stable order. The clients are the peer
+  :control."
   [wan nodes fault src]
   (->> nodes
        (remove #{src})
        (keep (fn [dst]
                (when-let [args (netem-args (behavior wan nodes fault src dst))]
                  [args dst])))
+       (concat (when-let [args (netem-args
+                                 {:delay-ms (client-delay-ms wan nodes src)})]
+                 [[args :control]]))
        (group-by first)
        (map (fn [[args pairs]] [args (mapv second pairs)]))
        (sort-by (comp str first))
@@ -171,19 +206,30 @@
                          :flowid (str "1:" band)]))))
             node-bands))))
 
+(defn- apply-bands!
+  "Replaces the current node's root qdisc with its bands."
+  [dev ips bs]
+  (util/meh (c/exec :tc :qdisc :del :dev dev :root))
+  (doseq [cmd (tc-commands dev ips bs)]
+    (apply c/exec :tc cmd)))
+
 (defn shape!
   "Shapes every node's egress for the profile and the fault (nil for
-  none). Returns {node bands}."
-  [test {:keys [ips devs]} wan fault]
+  none). A node whose commands fail for a fault goes back to the profile
+  before the failure is thrown. Returns {node bands}."
+  [test {:keys [ips devs control-ips]} wan fault]
   (let [nodes (:nodes test)]
     (c/on-nodes test
                 (fn [_ node]
-                  (let [dev (devs node)
-                        bs  (bands wan nodes fault node)]
+                  (let [dev  (devs node)
+                        ips' (assoc ips :control (control-ips node))
+                        bs   (bands wan nodes fault node)]
                     (c/su
-                      (util/meh (c/exec :tc :qdisc :del :dev dev :root))
-                      (doseq [cmd (tc-commands dev ips bs)]
-                        (apply c/exec :tc cmd)))
+                      (try (apply-bands! dev ips' bs)
+                           (catch Exception e
+                             (when fault
+                               (util/meh (apply-bands! dev ips' (bands wan nodes nil node))))
+                             (throw e))))
                     (mapv (fn [[args peers]] [(str/join " " (map name args)) peers])
                           bs))))))
 
@@ -195,9 +241,15 @@
                 (c/su (util/meh (c/exec :tc :qdisc :del :dev (devs node) :root))))))
 
 (defn learn
-  "Each node's address, and the device it reaches its peers through."
+  "Each node's address, the device it reaches its peers through, and the
+  control node's address as the node sees it (its SSH client)."
   [test]
   (let [ips  (into {} (c/on-nodes test (fn [_ _] (cn/local-ip))))
+        control-ips (into {} (c/on-nodes
+                               test
+                               (fn [_ _]
+                                 (first (str/split (str/trim (c/exec :printenv :SSH_CLIENT))
+                                                   #"\s+")))))
         devs (into {} (c/on-nodes
                         test
                         (fn [_ node]
@@ -210,23 +262,37 @@
                                 (throw (IllegalStateException.
                                          (str node " has no route device in: "
                                               route))))))))]
-    {:ips ips, :devs devs}))
+    {:ips ips, :devs devs, :control-ips control-ips}))
+
+(defn ping-ms
+  "The mean round trip of three pings from the current node, in
+  milliseconds, or nil when none came back."
+  [ip]
+  (let [out (try (c/exec :ping :-c 3 :-i "0.2" :-q ip)
+                 (catch RuntimeException e (str e)))]
+    (some-> (re-find #"= [\d.]+/([\d.]+)/" out)
+            second
+            (Double/parseDouble))))
 
 (defn measure
-  "The round trip in milliseconds from the first node to each other node,
-  from three pings; logged, so a run shows that the shaping took."
-  [test {:keys [ips]}]
-  (let [[a & others] (:nodes test)]
-    (when (seq others)
-      (c/on-nodes test [a]
-                  (fn [_ _]
-                    (into (sorted-map)
-                          (for [b others]
-                            (let [out (try (c/exec :ping :-c 3 :-i "0.2" :-q (ips b))
-                                           (catch RuntimeException e (str e)))]
-                              [b (some-> (re-find #"= [\d.]+/([\d.]+)/" out)
-                                         second
-                                         (Double/parseDouble))]))))))))
+  "Round trips in milliseconds: from the first node to each other node,
+  and from each node to the control node (where only the node's side is
+  shaped, so it is the clients' round trip); logged, so a run shows that
+  the shaping took. As [[from to measured profile] ...]."
+  [test wan {:keys [ips control-ips]}]
+  (let [nodes        (:nodes test)
+        [a & others] nodes
+        peers   (when (seq others)
+                  (get (c/on-nodes test [a]
+                                   (fn [_ _]
+                                     (mapv (fn [b] [b (ping-ms (ips b))]) others)))
+                       a))
+        clients (c/on-nodes test (fn [_ node] (ping-ms (control-ips node))))]
+    (concat
+      (for [[b rtt] peers]
+        [a b rtt (* 2 (base-delay-ms wan nodes a b))])
+      (for [node nodes]
+        [node "control" (get clients node) (client-delay-ms wan nodes node)]))))
 
 (defrecord Nemesis [wan db state]
   n/Reflection
@@ -239,18 +305,17 @@
       (let [shaped (shape! test s wan nil)]
         (info "WAN" (pr-str wan) "shaped:" (pr-str (into (sorted-map) shaped))))
       (when wan
-        (let [nodes (:nodes test)
-              a     (first nodes)]
+        (let [nodes (:nodes test)]
           (info "WAN regions:" (pr-str (into (sorted-map)
                                              (map (juxt identity
                                                         (partial region-name nodes))
                                                   nodes))))
-          (doseq [[b rtt] (get (measure test s) a)]
-            (let [expected (* 2 (base-delay-ms wan nodes a b))]
-              (info "WAN round trip" a "->" b ":" rtt "ms, profile" expected "ms")
-              (when (or (nil? rtt) (< rtt (* 0.8 expected)))
-                (warn "WAN round trip" a "->" b "is" rtt
-                      "ms, below the profile's" expected "ms: is netem shaping?"))))))
+          (info "WAN clients:" (name (:clients wan :local)))
+          (doseq [[from to rtt expected] (measure test wan s)]
+            (info "WAN round trip" from "->" to ":" rtt "ms, profile" expected "ms")
+            (when (and (pos? expected) (or (nil? rtt) (< rtt (* 0.8 expected))))
+              (warn "WAN round trip" from "->" to "is" rtt
+                    "ms, below the profile's" expected "ms: is netem shaping?")))))
       this))
 
   (invoke! [_ test {:keys [f value] :as op}]
