@@ -2,7 +2,7 @@
 # Stand up a Jepsen cluster of Debian containers on this host, with this
 # host as the control node.
 #
-#   docker/up.sh [--nodes N] [--dir DIR]
+#   docker/up.sh [--nodes N] [--dir DIR] [--tmpfs PATH[:OPTIONS]]...
 #
 # Writes into DIR (default ./docker-cluster):
 #   id_ed25519, id_ed25519.pub   the control node's key, authorized on every node
@@ -18,6 +18,15 @@
 # would move every node's clock and this host's together. Do not run the
 # `clock` nemesis against this cluster. They get NET_ADMIN, which the
 # partition and packet faults need, and nothing more.
+#
+# --tmpfs PATH mounts a tmpfs at PATH in every node, for instance
+# /opt/tuplesky, where the TupleSky test keeps each voter's binary and
+# store: a run then measures the protocol without the host's disk, and
+# its fsyncs cost next to nothing. OPTIONS are tmpfs mount options and
+# default to rw,exec, since the binary runs from there (Docker's own
+# default is noexec). The mount lives as long as the container: a killed
+# daemon finds its store again, and down.sh discards it. Repeat the flag
+# for more than one path.
 set -euo pipefail
 
 NODES=5
@@ -26,6 +35,7 @@ IMAGE=tuplesky-jepsen-node
 NETWORK=tuplesky-jepsen
 HERE=$(cd "$(dirname "$0")" && pwd)
 BUILD_ARGS=()
+RUN_ARGS=()
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -35,6 +45,13 @@ while [ $# -gt 0 ]; do
     # containers reach the Debian mirrors only through a proxy.
     --base) BUILD_ARGS+=(--build-arg "BASE=$2"); shift 2 ;;
     --build-network) BUILD_ARGS+=(--network "$2"); shift 2 ;;
+    --tmpfs)
+      case $2 in
+        /*:*) RUN_ARGS+=(--tmpfs "$2") ;;
+        /*) RUN_ARGS+=(--tmpfs "$2:rw,exec") ;;
+        *) echo "--tmpfs takes an absolute path, not $2" >&2; exit 2 ;;
+      esac
+      shift 2 ;;
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -59,7 +76,7 @@ for i in $(seq 1 "$NODES"); do
   node=n$i
   docker rm -f "$node" >/dev/null 2>&1 || true
   docker run -d --name "$node" --hostname "$node" --network "$NETWORK" \
-    --cap-add NET_ADMIN --init "$IMAGE" >/dev/null
+    --cap-add NET_ADMIN ${RUN_ARGS[@]+"${RUN_ARGS[@]}"} --init "$IMAGE" >/dev/null
   docker cp "$DIR/id_ed25519.pub" "$node:/root/.ssh/authorized_keys"
   docker exec "$node" sh -c 'chown root:root /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys'
   ip=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NETWORK\").IPAddress}}" "$node")
