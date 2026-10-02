@@ -19,10 +19,13 @@
 # `clock` nemesis against this cluster. They get NET_ADMIN, which the
 # partition and packet faults need, and nothing more.
 #
-# --tmpfs PATH mounts a tmpfs at PATH in every node, for instance
-# /opt/tuplesky, where the TupleSky test keeps each voter's binary and
-# store: a run then measures the protocol without the host's disk, and
-# its fsyncs cost next to nothing. OPTIONS are tmpfs mount options and
+# --tmpfs PATH mounts a tmpfs at PATH in every node, for instance /opt,
+# under which the TupleSky test keeps each voter's binary and store
+# (/opt/tuplesky) and the etcd and SwiftPaxos tests theirs: a run then
+# measures the protocol without the host's disk, and its fsyncs cost next
+# to nothing. Mount the parent, not a test's own directory: each test
+# removes its directory at setup and teardown, and a mount point cannot
+# be removed. The image's /opt is empty. OPTIONS are tmpfs mount options and
 # default to rw,exec, since the binary runs from there (Docker's own
 # default is noexec). The mount lives as long as the container: a killed
 # daemon finds its store again, and down.sh discards it. Repeat the flag

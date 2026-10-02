@@ -199,12 +199,16 @@ the control node's together. The containers get `NET_ADMIN` for
 partitions and `--wan` shaping, and nothing more; the host's kernel must
 have netem (`sudo modprobe sch_netem sch_prio cls_u32`).
 
-`docker/up.sh --tmpfs /opt/tuplesky` puts every node's `/opt/tuplesky`,
-where the test keeps each voter's binary and store, on a tmpfs. A run then
+`docker/up.sh --tmpfs /opt` puts every node's `/opt`, under which the
+test keeps each voter's binary and store (`/opt/tuplesky`), on a tmpfs.
+Mount the parent rather than `/opt/tuplesky` itself: the test removes its
+directory at setup and teardown, and a mount point cannot be removed (the
+etcd and SwiftPaxos tests do the same with `/opt/etcd` and
+`/opt/swiftpaxos`; the image's `/opt` is empty). A run then
 measures the protocol without the host's disk: its fsyncs cost next to
 nothing, so comparing it with a run on disk shows how much of a result is
 the store's synchronous writes. The mount is `rw,exec` unless options are
-given after a colon (`--tmpfs /opt/tuplesky:rw,exec,size=2g`), because
+given after a colon (`--tmpfs /opt:rw,exec,size=2g`), because
 Docker's own default is `noexec` and the binary runs from there. It lasts
 as long as the container: a voter Jepsen kills finds its store again on
 restart, and `docker/down.sh` discards it. The flag can be repeated.
