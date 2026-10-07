@@ -100,15 +100,25 @@
     {:log-message (str "Waiting for voter " n ": " what)
      :timeout     timeout-ms}))
 
+(defn daemon-env
+  "The environment coordd starts with: TOKIO_WORKER_THREADS when the test
+  sets :voter-workers, which tokio reads for its runtime's worker count, so
+  co-located voters can run fewer than one worker per host core. Nil
+  otherwise, which leaves tokio's default of one per core."
+  [test]
+  (when-let [workers (:voter-workers test)]
+    {:TOKIO_WORKER_THREADS (str workers)}))
+
 (defn start!
   "Starts coordd from the node's bundle."
   [test node]
   (let [n (voter test node)]
     (c/su
       (cu/start-daemon!
-        {:logfile (logfile n)
-         :pidfile (pidfile n)
-         :chdir   (bundle n)}
+        (cond-> {:logfile (logfile n)
+                 :pidfile (pidfile n)
+                 :chdir   (bundle n)}
+          (daemon-env test) (assoc :env (daemon-env test)))
         binary
         :--config "coordd.toml"))))
 

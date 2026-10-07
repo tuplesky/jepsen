@@ -228,6 +228,11 @@
     :default nil
     :parse-fn wan/parse-clients]
 
+   [nil "--voter-workers N" "Tokio worker threads per voter (TOKIO_WORKER_THREADS); unset for tokio's default of one per host core. Voters that share a host share its cores."
+    :default nil
+    :parse-fn parse-long
+    :validate [pos? "Must be positive"]]
+
    ["-w" "--workload NAME" "What workload to run."
     :default :append
     :parse-fn keyword
