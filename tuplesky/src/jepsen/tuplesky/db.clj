@@ -101,13 +101,17 @@
      :timeout     timeout-ms}))
 
 (defn daemon-env
-  "The environment coordd starts with: TOKIO_WORKER_THREADS when the test
-  sets :voter-workers, which tokio reads for its runtime's worker count, so
-  co-located voters can run fewer than one worker per host core. Nil
-  otherwise, which leaves tokio's default of one per core."
+  "The environment coordd starts with: the test's :voter-env (names to
+  values), and TOKIO_WORKER_THREADS when it sets :voter-workers, which tokio
+  reads for its runtime's worker count, so co-located voters can run fewer
+  than one worker per host core. Nil when neither is set, which leaves the
+  environment as start-stop-daemon's."
   [test]
-  (when-let [workers (:voter-workers test)]
-    {:TOKIO_WORKER_THREADS (str workers)}))
+  (let [env (cond-> (into {} (map (fn [[k v]] [(keyword k) (str v)]))
+                          (:voter-env test))
+              (:voter-workers test)
+              (assoc :TOKIO_WORKER_THREADS (str (:voter-workers test))))]
+    (not-empty env)))
 
 (defn start!
   "Starts coordd from the node's bundle."

@@ -231,6 +231,7 @@ Useful options:
 | `--wan` | none | `regions`, or one-way milliseconds between every two nodes |
 | `--wan-clients` | first | under `--wan`, the clients beside the first node, or `local` beside each node |
 | `--voter-workers` | unset | tokio worker threads per voter (`TOKIO_WORKER_THREADS`); unset is tokio's one per host core, which voters sharing a host each take |
+| `--voter-env` | none | `NAME=VALUE`, an environment variable every voter starts with; repeat for more |
 
 The UDP ports must be open between nodes, and from the control node to every
 node's API port.

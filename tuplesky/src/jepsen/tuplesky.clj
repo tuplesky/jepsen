@@ -233,6 +233,14 @@
     :parse-fn parse-long
     :validate [pos? "Must be positive"]]
 
+   [nil "--voter-env NAME=VALUE" "An environment variable every voter starts with, such as COORDD_PEER_STREAM_FRAMES=1; repeat for more."
+    :default {}
+    :parse-fn (fn [s]
+                (let [[k v] (str/split s #"=" 2)]
+                  [k (or v "")]))
+    :validate [(fn [[k _]] (re-matches #"[A-Za-z_][A-Za-z0-9_]*" k)) "Must be NAME=VALUE"]
+    :assoc-fn (fn [m k [n v]] (assoc-in m [k n] v))]
+
    ["-w" "--workload NAME" "What workload to run."
     :default :append
     :parse-fn keyword
