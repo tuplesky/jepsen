@@ -2,7 +2,7 @@
 # Stand up a Jepsen cluster of Debian containers on this host, with this
 # host as the control node.
 #
-#   docker/up.sh [--nodes N] [--dir DIR] [--tmpfs PATH[:OPTIONS]]...
+#   docker/up.sh [--nodes N] [--dir DIR] [--tmpfs PATH[:OPTIONS]]... [--libc-debug]
 #
 # Writes into DIR (default ./docker-cluster):
 #   id_ed25519, id_ed25519.pub   the control node's key, authorized on every node
@@ -30,6 +30,9 @@
 # default is noexec). The mount lives as long as the container: a killed
 # daemon finds its store again, and down.sh discards it. Repeat the flag
 # for more than one path.
+#
+# --libc-debug installs glibc's debug symbols (libc6-dbg) in the image, for
+# a run that profiles the daemons with perf from this host.
 set -euo pipefail
 
 NODES=5
@@ -48,6 +51,7 @@ while [ $# -gt 0 ]; do
     # containers reach the Debian mirrors only through a proxy.
     --base) BUILD_ARGS+=(--build-arg "BASE=$2"); shift 2 ;;
     --build-network) BUILD_ARGS+=(--network "$2"); shift 2 ;;
+    --libc-debug) BUILD_ARGS+=(--build-arg LIBC_DEBUG=1); shift ;;
     --tmpfs)
       case $2 in
         /*:*) RUN_ARGS+=(--tmpfs "$2") ;;

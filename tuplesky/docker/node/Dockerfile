@@ -18,5 +18,18 @@ RUN apt-get update \
  && chmod 700 /root/.ssh \
  && sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
 
+# With --build-arg LIBC_DEBUG=1 (docker/up.sh --libc-debug), glibc's debug
+# symbols too, for profiling runs: perf then names libc's local functions
+# (memcpy's and memmove's variants, _int_free), which the stripped library
+# leaves as bare addresses, and can unwind through them. A layer of its
+# own, after the packages every run takes.
+ARG LIBC_DEBUG=
+RUN if [ -n "$LIBC_DEBUG" ]; then \
+      apt-get update \
+      && { DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libc6-dbg \
+           || echo "libc6-dbg is not available from this base; the profile keeps libc's bare addresses"; } \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+
 EXPOSE 22
 CMD ["/usr/sbin/sshd", "-D", "-e"]

@@ -213,6 +213,12 @@ Docker's own default is `noexec` and the binary runs from there. It lasts
 as long as the container: a voter Jepsen kills finds its store again on
 restart, and `docker/down.sh` discards it. The flag can be repeated.
 
+`docker/up.sh --libc-debug` also installs glibc's debug symbols
+(`libc6-dbg`) in the image, so that `perf` on the host names libc's local
+functions (the variants of `memcpy` and `memmove`, `_int_free`) and can
+unwind through them when it profiles a voter. A base without the package
+builds without it.
+
 The TupleSky repository's `jepsen` workflow does exactly this on a GitHub
 runner.
 
