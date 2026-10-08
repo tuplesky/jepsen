@@ -233,6 +233,7 @@ Useful options:
 | `--nemesis-interval` | 30 | seconds between fault operations |
 | `--recovery-time` | 60 | seconds to wait after healing, before the final reads |
 | `--rate` | 20 | operations per second; 0 for unthrottled |
+| `--key-count` | 3 | keys in play at once, in the append and wr workloads |
 | `--per-key-limit` | 100 | operations per register, in the register workload |
 | `--wan` | none | `regions`, or one-way milliseconds between every two nodes |
 | `--wan-clients` | first | under `--wan`, the clients beside the first node, or `local` beside each node |

@@ -28,7 +28,7 @@
   "Elle list-append: transactions of appends and reads over a few lists,
   checked for strict serializability."
   [opts]
-  (assoc (append/test {:key-count          3
+  (assoc (append/test {:key-count          (:key-count opts 3)
                        :max-txn-length     4
                        :consistency-models [:strict-serializable]})
          :client (client/client)))
@@ -37,7 +37,7 @@
   "Elle rw-register: transactions of writes and reads over a few registers,
   checked for strict serializability."
   [opts]
-  (assoc (wr/test {:key-count          3
+  (assoc (wr/test {:key-count          (:key-count opts 3)
                    :max-txn-length     4
                    :consistency-models [:strict-serializable]})
          :client (client/client)))
@@ -209,6 +209,11 @@
     :default 60
     :parse-fn read-string
     :validate [(complement neg?) "Must not be negative"]]
+
+   [nil "--key-count N" "Keys in play at once in the append and wr workloads (Elle's key-count): each key retires after its share of writes and a fresh one takes its place."
+    :default 3
+    :parse-fn parse-long
+    :validate [pos? "Must be positive"]]
 
    [nil "--per-key-limit N" "Roughly how many operations each register gets, in the register workload."
     :default 100
