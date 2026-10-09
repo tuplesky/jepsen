@@ -29,6 +29,7 @@
   checked for strict serializability."
   [opts]
   (assoc (append/test {:key-count          (:key-count opts 3)
+                       :key-dist           (:key-dist opts :exponential)
                        :max-txn-length     4
                        :consistency-models [:strict-serializable]})
          :client (client/client)))
@@ -38,6 +39,7 @@
   checked for strict serializability."
   [opts]
   (assoc (wr/test {:key-count          (:key-count opts 3)
+                   :key-dist           (:key-dist opts :exponential)
                    :max-txn-length     4
                    :consistency-models [:strict-serializable]})
          :client (client/client)))
@@ -214,6 +216,11 @@
     :default 3
     :parse-fn parse-long
     :validate [pos? "Must be positive"]]
+
+   [nil "--key-dist DIST" "How the append and wr workloads pick among the keys in play: exponential (Elle's default: each key twice as likely as the one before, so a few stay hot whatever the key count) or uniform."
+    :default :exponential
+    :parse-fn keyword
+    :validate [#{:exponential :uniform} "Must be exponential or uniform"]]
 
    [nil "--per-key-limit N" "Roughly how many operations each register gets, in the register workload."
     :default 100
