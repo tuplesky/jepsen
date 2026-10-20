@@ -136,6 +136,16 @@
           str/trim
           not-empty))
 
+(defn led-ballot
+  "The highest ballot this voter's log says it led (`this voter leads ballot
+  N`, over all its boots), or nil when it led none."
+  [n]
+  (some->> (meh (c/exec :grep :-oE "^this voter leads ballot [0-9]+" (logfile n)))
+           str/split-lines
+           (keep #(some-> (re-find #"[0-9]+$" %) parse-long))
+           seq
+           (reduce max)))
+
 (defn kill!
   "Kills coordd outright."
   [test node]
@@ -190,6 +200,21 @@
       (cond-> {(logfile n)            "coordd.log"
                (:log (sockets test)) "sockets.log"}
         store (assoc store "domain.redb"))))
+
+  ; The leader is the voter that led the highest ballot any log names: a
+  ; new leader logs its ballot when it takes it, and a deposed one's lines
+  ; name only lower ones. Best-effort, as db/Primary allows: between a
+  ; leader's death and the next election it is still the one named. With
+  ; no ballot led yet, a random voter.
+  db/Primary
+  (primaries [this test]
+    (let [led (->> (c/on-nodes test (fn [test node] (led-ballot (voter test node))))
+                   (filter val))]
+      (if (seq led)
+        [(key (apply max-key val led))]
+        [(rand-nth (:nodes test))])))
+
+  (setup-primary! [this test node])
 
   db/Process
   (start! [this test node]

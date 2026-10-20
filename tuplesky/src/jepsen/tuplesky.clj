@@ -128,7 +128,9 @@
                          :faults    (:nemesis opts)
                          :partition {:targets [:one :majority :majorities-ring]}
                          :pause     {:targets [:one :majority]}
-                         :kill      {:targets [:one :majority :all]}
+                         :kill      {:targets (case (:kill-targets opts)
+                                                    :leader [:primaries]
+                                                    [:one :majority :all])}
                          :wan       (:wan opts)
                          :interval  (:nemesis-interval opts)})
         wrap          (:wrap-generator workload identity)
@@ -206,6 +208,11 @@
     :default 30
     :parse-fn read-string
     :validate [pos? "Must be positive"]]
+
+   [nil "--kill-targets TARGETS" "Which voters a kill takes: any (one, a majority or all, at random) or leader (the voter leading the highest ballot, from the voters' logs)."
+    :default :any
+    :parse-fn keyword
+    :validate [#{:any :leader} "Must be any or leader"]]
 
    [nil "--recovery-time SECONDS" "How long to wait after healing before the final reads."
     :default 60
