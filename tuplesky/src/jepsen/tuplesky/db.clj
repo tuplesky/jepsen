@@ -140,7 +140,10 @@
   "The highest ballot this voter's log says it led (`this voter leads ballot
   N`, over all its boots), or nil when it led none."
   [n]
+  ; grep exits 1 on a log without the line, and `meh` returns what that
+  ; threw rather than nil.
   (some->> (meh (c/exec :grep :-oE "^this voter leads ballot [0-9]+" (logfile n)))
+           (#(when (string? %) %))
            str/split-lines
            (keep #(some-> (re-find #"[0-9]+$" %) parse-long))
            seq
