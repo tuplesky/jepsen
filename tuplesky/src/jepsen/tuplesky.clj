@@ -12,6 +12,7 @@
             [jepsen [checker :as checker]
                     [cli :as cli]
                     [generator :as gen]
+                    [random :as rand]
                     [tests :as tests]]
             [jepsen.checker.timeline :as timeline]
             [jepsen.os.debian :as debian]
@@ -34,15 +35,40 @@
                        :consistency-models [:strict-serializable]})
          :client (client/client)))
 
+(defn read-only
+  "A wr transaction with its writes turned into reads of the same keys."
+  [txn]
+  (mapv (fn [[f k _ :as mop]] (if (= :w f) [:r k nil] mop)) txn))
+
+(defn with-read-ratio
+  "Makes about `ratio` of a wr workload's transactions read-only. Elle's
+  wr-txns picks a read or a write for each operation of a transaction,
+  half each, so the reads are then ratio + (1 - ratio) / 2 of the
+  operations: 0.6 makes about 80%. Writes stay unique per key, since a
+  value a read-only transaction would have written is simply never
+  written. A ratio of 0 leaves the workload as it is."
+  [ratio workload]
+  (if (pos? ratio)
+    (update workload :generator
+            (fn [g]
+              (gen/map (fn [op]
+                         (if (< (rand/double) ratio)
+                           (update op :value read-only)
+                           op))
+                       g)))
+    workload))
+
 (defn wr-workload
   "Elle rw-register: transactions of writes and reads over a few registers,
-  checked for strict serializability."
+  checked for strict serializability; --read-ratio makes some of them
+  read-only."
   [opts]
-  (assoc (wr/test {:key-count          (:key-count opts 3)
-                   :key-dist           (:key-dist opts :exponential)
-                   :max-txn-length     4
-                   :consistency-models [:strict-serializable]})
-         :client (client/client)))
+  (->> (assoc (wr/test {:key-count          (:key-count opts 3)
+                        :key-dist           (:key-dist opts :exponential)
+                        :max-txn-length     4
+                        :consistency-models [:strict-serializable]})
+              :client (client/client))
+       (with-read-ratio (:read-ratio opts 0))))
 
 (defn register-workload
   "Linearizable reads, writes and compare-and-set on independent
@@ -132,11 +158,17 @@
                                                     :leader [:primaries]
                                                     [:one :majority :all])}
                          :wan       (:wan opts)
+                         :hold-peers {:seconds (:hold-peer-links opts)
+                                      :port    (:peer-port opts)}
                          :interval  (:nemesis-interval opts)})
         wrap          (:wrap-generator workload identity)
         gen           (->> (:generator workload)
                            (throttle (:rate opts))
-                           (gen/nemesis (gen/phases (gen/sleep 5)
+                           ; The peer plane's hold, if any, from the
+                           ; workload's start; the faults after it.
+                           (gen/nemesis (gen/phases (tn/hold-peers-generator
+                                                      (:hold-peer-links opts))
+                                                    (gen/sleep 5)
                                                     (:generator nemesis)))
                            (gen/time-limit (:time-limit opts)))
         gen           (gen/phases
@@ -228,6 +260,16 @@
     :default :exponential
     :parse-fn keyword
     :validate [#{:exponential :uniform} "Must be exponential or uniform"]]
+
+   [nil "--read-ratio FRACTION" "The share of the wr workload's transactions made read-only; its other transactions mix reads and writes half each, so 0.6 makes about 80% of operations reads. 0 for Elle's mix."
+    :default 0
+    :parse-fn read-string
+    :validate [#(and (number? %) (<= 0 % 1)) "Must be a number from 0 to 1"]]
+
+   [nil "--hold-peer-links SECONDS" "Drop every voter's inbound peer-plane traffic for this long from the workload's start, while the clients run and the collectors still reach every voter: a leader's first proposals and the voters' votes wait (task-d67's start-up row). 0 for none."
+    :default 0
+    :parse-fn read-string
+    :validate [#(and (number? %) (not (neg? %))) "Must be a number, 0 or more"]]
 
    [nil "--per-key-limit N" "Roughly how many operations each register gets, in the register workload."
     :default 100

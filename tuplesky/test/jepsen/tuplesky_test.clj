@@ -57,3 +57,15 @@
       (is (= :local (:wan-clients (:options (parse ["--wan-clients" "local"])))))
       (is (nil? (:wan (:options (parse [])))))
       (is (seq (:errors (parse ["--wan" "mars"])))))))
+
+(deftest read-ratio
+  (testing "a read-only transaction reads what the transaction would have written"
+    (is (= [[:r 1 nil] [:r 2 nil] [:r 1 nil]]
+           (t/read-only [[:w 1 3] [:r 2 nil] [:r 1 nil]]))))
+  (testing "a ratio of 0 leaves the workload as it is"
+    (let [w {:generator :g}]
+      (is (identical? w (t/with-read-ratio 0 w)))))
+  (testing "the option parses, and refuses a ratio past 1"
+    (is (= 0.6 (get-in (cli/parse-opts ["--read-ratio" "0.6"] t/cli-opts)
+                       [:options :read-ratio])))
+    (is (seq (:errors (cli/parse-opts ["--read-ratio" "1.5"] t/cli-opts))))))

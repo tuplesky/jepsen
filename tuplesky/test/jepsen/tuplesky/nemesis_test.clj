@@ -4,6 +4,7 @@
                     [generator :as gen]
                     [util :as util]]
             [jepsen.generator.test :as gen.test]
+            [jepsen.nemesis]
             [jepsen.nemesis.combined :as nc]
             [jepsen.tuplesky.nemesis :as tn]))
 
@@ -72,3 +73,24 @@
     (testing "pauses and resumes still happen, on their own schedule"
       (is (some (comp #{:pause} :f) ops))
       (is (some (comp #{:resume} :f) ops)))))
+
+(deftest the-peer-plane-hold
+  (testing "no hold, no package and no generator"
+    (is (nil? (tn/hold-peers-package {:seconds 0 :port 7002})))
+    (is (nil? (tn/hold-peers-package nil)))
+    (is (nil? (tn/hold-peers-generator 0))))
+  (testing "a hold's package carries its nemesis and its release"
+    (let [pkg (tn/hold-peers-package {:seconds 10 :port 7002})]
+      (is (= #{:hold-peers :release-peers}
+             (jepsen.nemesis/fs (:nemesis pkg))))
+      (is (= :release-peers (:f (:final-generator pkg))))))
+  (testing "composed, the hold's two operations reach its nemesis"
+    (let [pkg (tn/nemesis-package (assoc opts :hold-peers {:seconds 10 :port 7002}))]
+      (is (every? (jepsen.nemesis/fs (:nemesis pkg)) [:hold-peers :release-peers]))))
+  (testing "the generator holds, then releases (an invocation and a
+            completion each, as db-ops reads them)"
+    (is (= [:hold-peers :hold-peers :release-peers :release-peers]
+           (->> (gen/nemesis (tn/hold-peers-generator 10))
+                gen.test/perfect*
+                (filter (comp #{:info} :type))
+                (map :f))))))

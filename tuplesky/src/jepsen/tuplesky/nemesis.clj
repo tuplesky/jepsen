@@ -15,8 +15,10 @@
 
   Depends on Jepsen alone, so the etcd baseline can load it too and both
   tests keep the same fault schedule."
-  (:require [jepsen [db :as db]
+  (:require [jepsen [control :as c]
+                    [db :as db]
                     [generator :as gen]
+                    [nemesis :as n]
                     [random :as rand]]
             [jepsen.nemesis.combined :as nc]
             [jepsen.tuplesky.wan :as wan]))
@@ -125,10 +127,73 @@
     (conj (vec (remove jepsen-packet-package? packages)) pkg)
     packages))
 
+(defn- release-peers!
+  "Takes every node's hold on its inbound peer-plane traffic away. A node
+  that holds none is left as it is."
+  [test port]
+  (c/on-nodes test
+              (fn [_ _]
+                (try (c/su (c/exec :iptables :-D :INPUT :-p :udp
+                                   :--dport port :-j :DROP))
+                     (catch Exception _ nil)))))
+
+(defrecord HoldPeers [port]
+  n/Reflection
+  (fs [_] #{:hold-peers :release-peers})
+
+  n/Nemesis
+  (setup! [this _] this)
+
+  (invoke! [_ test op]
+    (case (:f op)
+      :hold-peers
+      (do (c/on-nodes test
+                      (fn [_ _]
+                        (c/su (c/exec :iptables :-I :INPUT :-p :udp
+                                      :--dport port :-j :DROP))))
+          (assoc op :value [:held port]))
+
+      :release-peers
+      (do (release-peers! test port)
+          (assoc op :value [:released port]))))
+
+  (teardown! [_ test]
+    (release-peers! test port)))
+
+(defn hold-peers-package
+  "Every node's inbound UDP on the peer plane's port dropped at the start
+  of the workload, for :seconds, while the clients run (task-d67's
+  start-up row): a leader's proposals and the voters' acknowledgements to
+  each other wait, and the collectors, on the API plane, still reach every
+  voter. A hold shorter than QUIC's idle timeout (30 s) keeps the
+  connections. The hold itself is hold-peers-generator's, from the
+  workload's start; this package carries the nemesis, and the release in
+  case the workload ends first. Nil for no hold."
+  [{:keys [seconds port]}]
+  (when (and seconds (pos? seconds))
+    {:nemesis         (HoldPeers. port)
+     :final-generator {:type :info, :f :release-peers, :value nil}
+     :perf            #{{:name  "hold-peers"
+                         :start #{:hold-peers}
+                         :stop  #{:release-peers}
+                         :color "#E8C8A0"}}}))
+
+(defn hold-peers-generator
+  "The hold on the peer plane for its first `seconds`, from the workload's
+  start; nil for none."
+  [seconds]
+  (when (and seconds (pos? seconds))
+    (gen/phases {:type :info, :f :hold-peers, :value nil}
+                (gen/sleep seconds)
+                {:type :info, :f :release-peers, :value nil})))
+
 (defn nemesis-package
-  "nc/nemesis-package, with the DB package's faults separated, and the
-  network from jepsen.tuplesky.wan."
+  "nc/nemesis-package, with the DB package's faults separated, the
+  network from jepsen.tuplesky.wan, and the peer plane's hold at the
+  start when :hold-peers asks for one (hold-peers-package)."
   [opts]
-  (let [opts (update opts :faults set)]
+  (let [opts (update opts :faults set)
+        hold (hold-peers-package (:hold-peers opts))]
     (nc/compose-packages
-      (with-wan opts (separate-db-faults opts (nc/nemesis-packages opts))))))
+      (cond-> (vec (with-wan opts (separate-db-faults opts (nc/nemesis-packages opts))))
+        hold (conj hold)))))
