@@ -87,9 +87,9 @@
   (testing "composed, the hold's two operations reach its nemesis"
     (let [pkg (tn/nemesis-package (assoc opts :hold-peers {:seconds 10 :port 7002}))]
       (is (every? (jepsen.nemesis/fs (:nemesis pkg)) [:hold-peers :release-peers]))))
-  (testing "the generator holds, then releases (an invocation and a
-            completion each, as db-ops reads them)"
-    (is (= [:hold-peers :hold-peers :release-peers :release-peers]
+  ; The simulation gives each nemesis operation one :info entry.
+  (testing "the generator holds once, then releases once"
+    (is (= [:hold-peers :release-peers]
            (->> (gen/nemesis (tn/hold-peers-generator 10))
                 gen.test/perfect*
                 (filter (comp #{:info} :type))
