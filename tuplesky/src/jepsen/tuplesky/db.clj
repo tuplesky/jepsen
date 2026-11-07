@@ -114,10 +114,11 @@
 
 (defn save-status!
   "Keeps voter n's `coordctl feature status` in its features file at `at`,
-  or says the node has no admin socket."
+  or says the node has no admin socket. Bounded at 3 s, for a paused
+  voter."
   [n at]
   (c/su (c/exec :bash :-c
-                (str "if [ -S " (admin-socket n) " ]; then "
+                (str "if [ -S " (admin-socket n) " ]; then timeout 3 "
                      coordctl " feature --socket " (admin-socket n) " status > "
                      (features-file n at) " 2>&1; else echo 'no admin socket' > "
                      (features-file n at) "; fi"))))
@@ -313,10 +314,6 @@
   db/LogFiles
   (log-files [this test node]
     (let [n (voter test node)]
-      ; The features as they stand at the end, before the kill: restarts
-      ; in the run kept them or did not.
-      (when (seq (:activate test))
-        (meh (save-status! n :end)))
       (meh (kill! test node))
       (let [store (store-file n)]
         (cond-> {(logfile n)            "coordd.log"
@@ -344,7 +341,12 @@
   (start! [this test node]
     (start! test node))
 
+  ; The features as they stand before each kill: Jepsen kills the DB before
+  ; it takes the logs, so the last of these is the status at the end, and
+  ; shows whether restarts in the run kept them.
   (kill! [this test node]
+    (when (seq (:activate test))
+      (meh (save-status! (voter test node) :end)))
     (kill! test node))
 
   ; By process name (pkill), not cu/grepkill!: its `pgrep -f pattern |
