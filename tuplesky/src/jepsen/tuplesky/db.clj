@@ -13,7 +13,8 @@
   These are fixture credentials from the harness's test authority. See
   docs/operations/multi-host-test.md in the TupleSky repository for what the
   harness does and does not promise."
-  (:require [clojure.java.shell :as shell]
+  (:require [clojure.java.io :as io]
+            [clojure.java.shell :as shell]
             [clojure.string :as str]
             [clojure.tools.logging :refer [info warn]]
             [jepsen [control :as c]
@@ -27,6 +28,11 @@
 
 (def dir "/opt/tuplesky")
 (def binary (str dir "/coordd"))
+
+(def coordctl
+  "Where `coordctl` goes on a node, beside coordd, when the test activates
+  replicated features."
+  (str dir "/coordctl"))
 
 (defn bundle
   "The directory a node's bundle is unpacked to."
@@ -45,6 +51,104 @@
    :flags   "-uanm"
    :ports   [(:api-port test) (:peer-port test)]})
 (defn pidfile [n] (str (bundle n) "/coordd.pid"))
+
+(defn admin-socket
+  "The voter's admin socket (task-d99), beside its state, which the
+  bundle's configuration puts in the bundle itself. A build before
+  task-d99 opens none."
+  [n]
+  (str (bundle n) "/admin.sock"))
+
+(defn features-file
+  "Where a voter's `coordctl feature status` is kept, at :start (after the
+  activation) or :end (before its logs are taken)."
+  [n at]
+  (str (bundle n) "/features-" (name at) ".txt"))
+
+(defn active-set
+  "The features a `coordctl feature status` text says are active, as a set
+  of names; empty when none is, or the text has no `active` line."
+  [text]
+  (or (some (fn [line]
+              (when-let [[_ names] (re-find #"^active (\S+)$" line)]
+                (if (= "-" names) #{} (set (str/split names #",")))))
+            (str/split-lines (or text "")))
+      #{}))
+
+(defn status-holds?
+  "Whether a `coordctl feature status` text says every one of `features`
+  is active at this voter and, where this voter leads, that every voter it
+  lists holds them all: the leader's view is the domain's."
+  [features text]
+  (let [lines  (str/split-lines (or text ""))
+        leads? (some #(and (str/starts-with? % "epoch ")
+                           (str/includes? % "(this node)"))
+                     lines)
+        held   (keep #(second (re-find #"^voter \S+ .* held (\S+)$" %)) lines)]
+    (boolean
+      (and (every? (active-set text) features)
+           (or (not leads?)
+               (and (seq held)
+                    (every? (fn [h] (every? (set (str/split h #",")) features))
+                            held)))))))
+
+(defn coordctl!
+  "Runs `coordctl feature --socket <voter n's admin socket> <args>` on
+  this node as root, and returns [exit text], whatever its exit: 1 is a
+  refusal (a follower, or a leader still missing a voter's advertisement),
+  2 a node it cannot reach."
+  [n & args]
+  (let [out (c/su (c/exec :bash :-c
+                          (str coordctl " feature --socket " (admin-socket n) " "
+                               (str/join " " args) " 2>&1; echo \"exit=$?\"")))
+        [_ text code] (re-find #"(?s)^(.*?)\n?exit=(\d+)$" out)]
+    [(parse-long code) text]))
+
+(defn save-status!
+  "Keeps voter n's `coordctl feature status` in its features file at `at`,
+  or says the node has no admin socket."
+  [n at]
+  (c/su (c/exec :bash :-c
+                (str "if [ -S " (admin-socket n) " ]; then "
+                     coordctl " feature --socket " (admin-socket n) " status > "
+                     (features-file n at) " 2>&1; else echo 'no admin socket' > "
+                     (features-file n at) "; fi"))))
+
+(defn activate!
+  "Activates the test's :activate features through this node's admin
+  socket, in order, and waits until this voter reports them all active
+  and, where it leads, every voter holding them, then keeps its status in
+  features-start.txt. Every node asks: a follower is refused, and the
+  leader is refused until every voter's advertisement has reached it, so
+  each asks again until its own view holds. A node without an admin socket
+  (a pair's base, built before task-d99) is left as it is, and says so in
+  the file. Throws when the features are not held within `timeout-ms`, so
+  a run of an inactive build is not measured."
+  [test node timeout-ms]
+  (let [n        (voter test node)
+        features (:activate test)
+        socket?  (= "yes" (c/exec :bash :-c (str "test -S " (admin-socket n)
+                                                  " && echo yes || echo no")))]
+    (if-not socket?
+      (do (info "Voter" n "has no admin socket; no feature activated")
+          (save-status! n :start))
+      (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+        (loop []
+          (let [[_ text] (coordctl! n "status")]
+            (cond
+              (status-holds? features text)
+              (do (info "Voter" n "holds" (str/join "," features))
+                  (save-status! n :start))
+
+              (< deadline (System/currentTimeMillis))
+              (throw+ {:type ::features-not-held, :node node
+                       :features features, :status text})
+
+              :else
+              (do (when-let [f (first (remove (active-set text) features))]
+                    (coordctl! n "activate" f))
+                  (Thread/sleep 1000)
+                  (recur)))))))))
 
 (defn voter
   "One-based voter number of a node."
@@ -167,6 +271,12 @@
         (c/exec :mkdir :-p dir)
         (c/upload [(str (:bin-dir test) "/coordd")] binary)
         (c/exec :chmod :+x binary)
+        ; coordctl beside it, where the test activates features and the
+        ; build has one.
+        (when (and (seq (:activate test))
+                   (.exists (io/file (str (:bin-dir test) "/coordctl"))))
+          (c/upload [(str (:bin-dir test) "/coordctl")] coordctl)
+          (c/exec :chmod :+x coordctl))
         (c/upload [(str (:run-dir test) "/n" n ".tgz")] (str dir "/bundle.tgz"))
         (c/exec :tar :xzf (str dir "/bundle.tgz") :-C dir)
         (c/exec :rm (str dir "/bundle.tgz"))
@@ -182,7 +292,12 @@
                   120000 "peer plane meshed")
       (await-log! n "^voters submittable=" (re-pattern (str "=" peers " of"))
                   120000 "collector links up")
-      (jepsen/synchronize test)))
+      (jepsen/synchronize test)
+      ; The replicated features the test asks for (task-d99), active and
+      ; held at every voter before the nemesis and the workload.
+      (when (seq (:activate test))
+        (activate! test node 60000)
+        (jepsen/synchronize test 120))))
 
   (teardown! [this test node]
     (meh (kill! test node))
@@ -197,12 +312,18 @@
   ; which redb recovers to its last commit.
   db/LogFiles
   (log-files [this test node]
-    (meh (kill! test node))
-    (let [n     (voter test node)
-          store (store-file n)]
-      (cond-> {(logfile n)            "coordd.log"
-               (:log (sockets test)) "sockets.log"}
-        store (assoc store "domain.redb"))))
+    (let [n (voter test node)]
+      ; The features as they stand at the end, before the kill: restarts
+      ; in the run kept them or did not.
+      (when (seq (:activate test))
+        (meh (save-status! n :end)))
+      (meh (kill! test node))
+      (let [store (store-file n)]
+        (cond-> {(logfile n)            "coordd.log"
+                 (:log (sockets test)) "sockets.log"}
+          store                 (assoc store "domain.redb")
+          (seq (:activate test)) (assoc (features-file n :start) "features-start.txt"
+                                        (features-file n :end) "features-end.txt")))))
 
   ; The leader is the voter that led the highest ballot any log names: a
   ; new leader logs its ballot when it takes it, and a deposed one's lines

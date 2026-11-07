@@ -289,6 +289,10 @@
     :default nil
     :parse-fn wan/parse-clients]
 
+   [nil "--activate FEATURES" "Replicated features to activate once every voter is submittable, before the nemesis and the workload, comma-separated in order, such as early-proposal,release-at-execution (task-d99), through coordctl from --bin-dir on each node's admin socket; a voter without one (a build before task-d99) is left as it is. The test fails if they are not held within a minute."
+    :default nil
+    :parse-fn (fn [s] (vec (remove str/blank? (str/split s #","))))]
+
    [nil "--voter-workers N" "Tokio worker threads per voter (TOKIO_WORKER_THREADS); unset for tokio's default of one per host core. Voters that share a host share its cores."
     :default nil
     :parse-fn parse-long
