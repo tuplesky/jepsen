@@ -238,6 +238,7 @@ Useful options:
 | `--per-key-limit` | 100 | operations per register, in the register workload |
 | `--wan` | none | `regions`, or one-way milliseconds between every two nodes |
 | `--wan-clients` | first | under `--wan`, the clients beside the first node, or `local` beside each node |
+| `--activate` | unset | replicated features to activate once every voter is submittable, comma-separated in order (`early-proposal,release-at-execution`, task-d99), through `coordctl` from `--bin-dir` on each node's admin socket; a voter without one is left as it is, and the test fails if they are not held within a minute. Each voter's status after the activation and at the end comes with its log (`features-start.txt`, `features-end.txt`) |
 | `--voter-workers` | unset | tokio worker threads per voter (`TOKIO_WORKER_THREADS`); unset is tokio's one per host core, which voters sharing a host each take |
 | `--voter-env` | none | `NAME=VALUE`, an environment variable every voter starts with; repeat for more |
 
