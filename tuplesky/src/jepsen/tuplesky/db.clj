@@ -52,6 +52,14 @@
    :ports   [(:api-port test) (:peer-port test)]})
 (defn pidfile [n] (str (bundle n) "/coordd.pid"))
 
+(defn voter
+  "One-based voter number of a node."
+  [test node]
+  (let [i (.indexOf ^java.util.List (vec (:nodes test)) node)]
+    (when (neg? i)
+      (throw+ {:type ::unknown-node, :node node}))
+    (inc i)))
+
 (defn admin-socket
   "The voter's admin socket (task-d99), beside its state, which the
   bundle's configuration puts in the bundle itself. A build before
@@ -149,14 +157,6 @@
                     (coordctl! n "activate" f))
                   (Thread/sleep 1000)
                   (recur)))))))))
-
-(defn voter
-  "One-based voter number of a node."
-  [test node]
-  (let [i (.indexOf ^java.util.List (vec (:nodes test)) node)]
-    (when (neg? i)
-      (throw+ {:type ::unknown-node, :node node}))
-    (inc i)))
 
 (defn hosts-spec
   "The harness's host list: every node a voter, at its own name, on the
