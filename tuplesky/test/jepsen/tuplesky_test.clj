@@ -1,6 +1,8 @@
 (ns jepsen.tuplesky-test
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.tools.cli :as cli]
+            [jepsen.generator :as gen]
+            [jepsen.generator.test :as gen.test]
             [jepsen.tuplesky :as t]))
 
 (def base
@@ -69,3 +71,25 @@
     (is (= 0.6 (get-in (cli/parse-opts ["--read-ratio" "0.6"] t/cli-opts)
                        [:options :read-ratio])))
     (is (seq (:errors (cli/parse-opts ["--read-ratio" "1.5"] t/cli-opts))))))
+
+(deftest etcd-register-mix
+  (let [ops     (->> (t/etcd-register-generator
+                       {:nodes ["n1" "n2" "n3" "n4" "n5"] :per-key-limit 100})
+                     (gen/limit 3000)
+                     (gen.test/perfect (gen.test/n+nemesis-context 30))
+                     (filter #(= :invoke (:type %))))
+        reads   (filter #(= :read (:f %)) ops)
+        others  (remove #(= :read (:f %)) ops)]
+    (testing "the first n threads read, and only they"
+      (is (= #{0 1 2 3 4} (set (map :process reads)))))
+    (testing "every other thread mixes write and cas"
+      (is (= #{:write :cas} (set (map :f others))))
+      (is (every? #(<= 5 % 29) (map :process others))))
+    (testing "about a sixth of the operations are reads"
+      (is (< 0.12 (/ (count reads) (count ops)) 0.22)))))
+
+(deftest register-mix-option
+  (testing "the register workload takes the jepsen mix unless told etcd"
+    (let [parse #(:options (cli/parse-opts % t/cli-opts))]
+      (is (= :jepsen (:register-mix (parse []))))
+      (is (= :etcd (:register-mix (parse ["--register-mix" "etcd"])))))))

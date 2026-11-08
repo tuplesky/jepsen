@@ -15,6 +15,7 @@
                     [random :as rand]
                     [tests :as tests]]
             [jepsen.checker.timeline :as timeline]
+            [jepsen.independent :as independent]
             [jepsen.os.debian :as debian]
             [jepsen.tests.cycle [append :as append]
                                 [wr :as wr]]
@@ -70,14 +71,41 @@
               :client (client/client))
        (with-read-ratio (:read-ratio opts 0))))
 
+(defn etcd-register-generator
+  "The register workload's operations split over the client threads as
+  jepsen-io/etcd's register test splits them in its runs: n threads in
+  all read (n the node count), and every other thread mixes writes and
+  compare-and-sets half each. etcd's test asks for n readers in each key's
+  group of 2n, but its runs here read on 5 threads of 30 at five nodes;
+  this takes the first n, which are in the first group. Jepsen's own
+  register test, which the jepsen mix runs, reads on n threads in every
+  group and mixes [w cas cas], so its histories hold more reads and fewer
+  writes than etcd's at the same clients. Each key's operations are
+  limited as that test limits them."
+  [opts]
+  (let [n       (count (:nodes opts))
+        reader? (fn [thread] (and (integer? thread) (< thread n)))]
+    (independent/concurrent-generator
+      (* 2 n)
+      (range)
+      (fn [_k]
+        (->> (gen/any (gen/on-threads reader? lr/r)
+                      (gen/on-threads (complement reader?) (gen/mix [lr/w lr/cas])))
+             (gen/limit (* (+ (rand/double 0.1) 0.9)
+                           (:per-key-limit opts 20)))
+             (gen/process-limit 20))))))
+
 (defn register-workload
   "Linearizable reads, writes and compare-and-set on independent
-  registers, checked by Knossos."
+  registers, checked by Knossos. --register-mix etcd splits the client
+  threads as etcd's register test does (see etcd-register-generator)."
   [opts]
-  (assoc (lr/test {:nodes         (:nodes opts)
-                   :model         (model/cas-register)
-                   :per-key-limit (:per-key-limit opts)})
-         :client (client/client)))
+  (cond-> (assoc (lr/test {:nodes         (:nodes opts)
+                           :model         (model/cas-register)
+                           :per-key-limit (:per-key-limit opts)})
+                 :client (client/client))
+    (= :etcd (:register-mix opts))
+    (assoc :generator (etcd-register-generator opts))))
 
 (def workloads
   {:append   append-workload
@@ -275,6 +303,11 @@
     :default 100
     :parse-fn parse-long
     :validate [pos? "Must be positive"]]
+
+   [nil "--register-mix MIX" "How the register workload splits its client threads: jepsen (Jepsen's register test: n readers in each key's group of 2n, the rest mixing write, cas, cas) or etcd (jepsen-io/etcd's register test as its runs split them: the first n threads read, every other mixes write and cas)."
+    :default :jepsen
+    :parse-fn keyword
+    :validate [#{:jepsen :etcd} "Must be jepsen or etcd"]]
 
    ["-r" "--rate HZ" "Approximate number of requests per second, or 0 for as many as the clients can issue (a throughput test)."
     :default 20
