@@ -20,6 +20,7 @@
             [jepsen [control :as c]
                     [core :as jepsen]
                     [db :as db]
+                    [nemesis :as n]
                     [store :as store]
                     [util :as util :refer [meh]]]
             [jepsen.control.util :as cu]
@@ -69,7 +70,8 @@
 
 (defn features-file
   "Where a voter's `coordctl feature status` is kept, at :start (after the
-  activation) or :end (before its logs are taken)."
+  activation), :late (after the activation under load, --activate-after)
+  or :end (before its logs are taken)."
   [n at]
   (str (bundle n) "/features-" (name at) ".txt"))
 
@@ -104,10 +106,11 @@
   "Runs `coordctl feature --socket <voter n's admin socket> <args>` on
   this node as root, and returns [exit text], whatever its exit: 1 is a
   refusal (a follower, or a leader still missing a voter's advertisement),
-  2 a node it cannot reach."
+  2 a node it cannot reach, 124 one that did not answer in 5 s (a paused
+  voter, under --activate-after)."
   [n & args]
   (let [out (c/su (c/exec :bash :-c
-                          (str coordctl " feature --socket " (admin-socket n) " "
+                          (str "timeout 5 " coordctl " feature --socket " (admin-socket n) " "
                                (str/join " " args) " 2>&1; echo \"exit=$?\"")))
         [_ text code] (re-find #"(?s)^(.*?)\n?exit=(\d+)$" out)]
     [(parse-long code) text]))
@@ -132,22 +135,25 @@
   each asks again until its own view holds. A node without an admin socket
   (a pair's base, built before task-d99) is left as it is, and says so in
   the file. Throws when the features are not held within `timeout-ms`, so
-  a run of an inactive build is not measured."
-  [test node timeout-ms]
+  a run of an inactive build is not measured. With `features` and `at`,
+  activates those instead and keeps the status in the file for `at`
+  (LateActivation's, under load)."
+  ([test node timeout-ms]
+   (activate! test node (:activate test) timeout-ms :start))
+  ([test node features timeout-ms at]
   (let [n        (voter test node)
-        features (:activate test)
         socket?  (= "yes" (c/exec :bash :-c (str "test -S " (admin-socket n)
                                                   " && echo yes || echo no")))]
     (if-not socket?
       (do (info "Voter" n "has no admin socket; no feature activated")
-          (save-status! n :start))
+          (save-status! n at))
       (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
         (loop []
           (let [[_ text] (coordctl! n "status")]
             (cond
               (status-holds? features text)
               (do (info "Voter" n "holds" (str/join "," features))
-                  (save-status! n :start))
+                  (save-status! n at))
 
               (< deadline (System/currentTimeMillis))
               (throw+ {:type ::features-not-held, :node node
@@ -157,7 +163,47 @@
               (do (when-let [f (first (remove (active-set text) features))]
                     (coordctl! n "activate" f))
                   (Thread/sleep 1000)
-                  (recur)))))))))
+                  (recur))))))))))
+
+(defn activates?
+  "Whether the test activates replicated features, at setup or under load."
+  [test]
+  (boolean (or (seq (:activate test)) (seq (:features (:activate-after test))))))
+
+(defrecord LateActivation [features]
+  n/Reflection
+  (fs [_] #{:activate})
+
+  n/Nemesis
+  (setup! [this _] this)
+
+  ; Every node asks, as at setup, and each has a minute. A node that is
+  ; down, paused or cut off doesn't hold them in that minute; that is
+  ; recorded, not thrown, and the features' status at the end says
+  ; whether the restarts kept them.
+  (invoke! [_ test op]
+    (let [held (c/on-nodes test
+                           (fn [test node]
+                             (try (activate! test node features 60000 :late)
+                                  :held
+                                  (catch Throwable e
+                                    (warn "Voter" (voter test node) "did not hold"
+                                          (str/join "," features) ":" (.getMessage e))
+                                    :not-held))))]
+      (assoc op :value (into (sorted-map) held))))
+
+  (teardown! [_ _]))
+
+(defn late-activation-package
+  "The replicated features of --activate-after, activated under load,
+  :secs into the workload (tuplesky-test schedules the operation); nil for
+  none."
+  [{:keys [features]}]
+  (when (seq features)
+    {:nemesis (LateActivation. features)
+     :perf    #{{:name  "activate"
+                 :fs    #{:activate}
+                 :color "#A0C8E8"}}}))
 
 (defn hosts-spec
   "The harness's host list: every node a voter, at its own name, on the
@@ -274,7 +320,7 @@
         (c/exec :chmod :+x binary)
         ; coordctl beside it, where the test activates features and the
         ; build has one.
-        (when (and (seq (:activate test))
+        (when (and (activates? test)
                    (.exists (io/file (str (:bin-dir test) "/coordctl"))))
           (c/upload [(str (:bin-dir test) "/coordctl")] coordctl)
           (c/exec :chmod :+x coordctl))
@@ -319,8 +365,9 @@
         (cond-> {(logfile n)            "coordd.log"
                  (:log (sockets test)) "sockets.log"}
           store                 (assoc store "domain.redb")
-          (seq (:activate test)) (assoc (features-file n :start) "features-start.txt"
-                                        (features-file n :end) "features-end.txt")))))
+          (seq (:activate test)) (assoc (features-file n :start) "features-start.txt")
+          (activates? test) (assoc (features-file n :end) "features-end.txt")
+          (seq (:features (:activate-after test))) (assoc (features-file n :late) "features-late.txt")))))
 
   ; The leader is the voter that led the highest ballot any log names: a
   ; new leader logs its ballot when it takes it, and a deposed one's lines
@@ -345,7 +392,7 @@
   ; it takes the logs, so the last of these is the status at the end, and
   ; shows whether restarts in the run kept them.
   (kill! [this test node]
-    (when (seq (:activate test))
+    (when (activates? test)
       (meh (save-status! (voter test node) :end)))
     (kill! test node))
 

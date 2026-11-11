@@ -188,16 +188,27 @@
                          :wan       (:wan opts)
                          :hold-peers {:seconds (:hold-peer-links opts)
                                       :port    (:peer-port opts)}
-                         :interval  (:nemesis-interval opts)})
+                         :interval  (:nemesis-interval opts)
+                         :extra     [(db/late-activation-package
+                                       (:activate-after opts))]})
+        late          (:activate-after opts)
         wrap          (:wrap-generator workload identity)
         gen           (->> (:generator workload)
                            (throttle (:rate opts))
                            ; The peer plane's hold, if any, from the
                            ; workload's start; the faults after it.
-                           (gen/nemesis (gen/phases (tn/hold-peers-generator
-                                                      (:hold-peer-links opts))
-                                                    (gen/sleep 5)
-                                                    (:generator nemesis)))
+                           (gen/nemesis (gen/any
+                                          (gen/phases (tn/hold-peers-generator
+                                                        (:hold-peer-links opts))
+                                                      (gen/sleep 5)
+                                                      (:generator nemesis))
+                                          ; --activate-after's features,
+                                          ; under load and the faults.
+                                          (when (seq (:features late))
+                                            (tn/at (:secs late)
+                                                   {:type  :info
+                                                    :f     :activate
+                                                    :value (:features late)}))))
                            (gen/time-limit (:time-limit opts)))
         gen           (gen/phases
                         gen
@@ -325,6 +336,15 @@
    [nil "--activate FEATURES" "Replicated features to activate once every voter is submittable, before the nemesis and the workload, comma-separated in order, such as early-proposal,release-at-execution (task-d99), through coordctl from --bin-dir on each node's admin socket; a voter without one (a build before task-d99) is left as it is. The test fails if they are not held within a minute."
     :default nil
     :parse-fn (fn [s] (vec (remove str/blank? (str/split s #","))))]
+
+   [nil "--activate-after SECS:FEATURES" "Replicated features to activate under load: SECS seconds into the workload, with the nemesis running, comma-separated in order, such as 60:answer-on-release. Every node asks through coordctl, as --activate does at setup, and has a minute; a node that doesn't hold them then (down, paused or cut off) is recorded in the operation, not failed. Needs a build with an admin socket (task-d99)."
+    :default nil
+    :parse-fn (fn [s]
+                (let [[_ secs features] (re-find #"^(\d+(?:\.\d+)?):(.+)$" s)]
+                  (when secs
+                    {:secs     (read-string secs)
+                     :features (vec (remove str/blank? (str/split features #",")))})))
+    :validate [#(seq (:features %)) "Must be SECS:FEATURES, such as 60:answer-on-release"]]
 
    [nil "--voter-workers N" "Tokio worker threads per voter (TOKIO_WORKER_THREADS); unset for tokio's default of one per host core. Voters that share a host share its cores."
     :default nil

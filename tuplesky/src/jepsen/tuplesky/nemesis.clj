@@ -187,13 +187,34 @@
                 (gen/sleep seconds)
                 {:type :info, :f :release-peers, :value nil})))
 
+(defrecord At [nanos op]
+  gen/Generator
+  (op [this test ctx]
+    (when op
+      (let [o (gen/fill-in-op op ctx)]
+        (if (= :pending o)
+          [:pending this]
+          [(assoc o :time (max (:time o) nanos)) (At. nanos nil)]))))
+
+  (update [this _ _ _] this))
+
+(defn at
+  "A generator of one operation, `op`, at `secs` seconds into the
+  generator's run, and nothing after it. Unlike a gen/sleep before it, it
+  holds no worker while it waits, so under gen/any the other generator's
+  operations go on in the meantime."
+  [secs op]
+  (At. (gen/secs->nanos secs) op))
+
 (defn nemesis-package
   "nc/nemesis-package, with the DB package's faults separated, the
-  network from jepsen.tuplesky.wan, and the peer plane's hold at the
-  start when :hold-peers asks for one (hold-peers-package)."
+  network from jepsen.tuplesky.wan, the peer plane's hold at the
+  start when :hold-peers asks for one (hold-peers-package), and any
+  packages in :extra (nils skipped)."
   [opts]
   (let [opts (update opts :faults set)
         hold (hold-peers-package (:hold-peers opts))]
     (nc/compose-packages
       (cond-> (vec (with-wan opts (separate-db-faults opts (nc/nemesis-packages opts))))
-        hold (conj hold)))))
+        hold (conj hold)
+        true (into (remove nil? (:extra opts)))))))
