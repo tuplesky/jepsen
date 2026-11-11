@@ -94,3 +94,107 @@
                 gen.test/perfect*
                 (filter (comp #{:info} :type))
                 (map :f))))))
+
+(def partition-opts
+  (assoc opts :partition {:targets [:follower] :seconds [5 10] :every 60}))
+
+(defn partition-ops
+  "The partitions and heals of separate-partition-faults' partition
+  package, run through a simulated test, one :info entry each."
+  [o n]
+  (let [pkgs (tn/separate-partition-faults o (nc/nemesis-packages o))
+        g    (:generator (first (filter tn/partition-package? pkgs)))]
+    (->> (gen/limit n g)
+         gen/nemesis
+         gen.test/perfect*
+         (filter (comp #{:info} :type))
+         ; One entry an operation, whether the simulation gives it one or two.
+         (partition-by (juxt :f :time))
+         (map first))))
+
+(deftest partitions-heal-after-their-hold-and-wait-out-their-gap
+  (let [ops   (partition-ops partition-opts 200)
+        fs    (map :f ops)
+        times (map :time ops)
+        secs  util/secs->nanos]
+    (is (= 200 (count ops)))
+    (is (= (take 200 (cycle [:start-partition :stop-partition])) fs)
+        "partitions and heals alternate, beginning with a partition")
+    (is (every? #{:follower} (map :value (filter (comp #{:start-partition} :f) ops))))
+    (is (< (first times) (secs 120)) "the first partition within twice :every")
+    (doseq [[[a b] i] (map vector (partition 2 1 times) (range))]
+      (if (even? i)
+        (is (<= (secs 5) (- b a) (+ (secs 10) 1e6))
+            (str "partition " i " held " (- b a)))
+        (is (<= 0 (- b a) (+ (secs 120) 1e6))
+            (str "gap " i " was " (- b a)))))
+    (testing "the holds vary over the range"
+      (let [holds (map (fn [[a b]] (- b a)) (partition 2 times))]
+        (is (< 1 (count (distinct holds))))))))
+
+(deftest separates-only-the-partition-package
+  (let [pkgs  (nc/nemesis-packages partition-opts)
+        pkgs' (tn/separate-partition-faults partition-opts pkgs)
+        [old new] (map #(first (filter tn/partition-package? %)) [pkgs pkgs'])]
+    (testing "exactly one package is the partition package"
+      (is (= 1 (count (filter tn/partition-package? pkgs)))))
+    (testing "it gets the schedule and the follower nemesis, and keeps the rest"
+      (is (instance? jepsen.tuplesky.nemesis.Partitions (:generator new)))
+      (is (not= (:nemesis old) (:nemesis new)))
+      (is (= (dissoc old :generator :nemesis) (dissoc new :generator :nemesis))))
+    (testing "every other package is untouched"
+      (is (= (remove tn/partition-package? pkgs)
+             (remove tn/partition-package? pkgs')))))
+  (testing "without :seconds or :follower nothing changes"
+    (let [o    (assoc opts :partition {:targets [:one :majority]})
+          pkgs (nc/nemesis-packages o)]
+      (is (= pkgs (tn/separate-partition-faults o pkgs)))))
+  (testing ":follower alone keeps the interval's schedule"
+    (let [o    (assoc opts :partition {:targets [:follower]})
+          pkgs (nc/nemesis-packages o)
+          [old new] (map #(first (filter tn/partition-package? %))
+                         [pkgs (tn/separate-partition-faults o pkgs)])]
+      (is (= (:generator old) (:generator new)))
+      (is (not= (:nemesis old) (:nemesis new))))))
+
+(def led-by-n2
+  "A DB whose primary is n2."
+  (reify
+    db/DB
+    (setup! [_ _ _])
+    (teardown! [_ _ _])
+    db/Primary
+    (primaries [_ _] ["n2"])
+    (setup-primary! [_ _ _])))
+
+(deftest a-follower-grudge-cuts-one-non-leader-off
+  (let [test {:nodes ["n1" "n2" "n3" "n4" "n5"]}]
+    (dotimes [_ 50]
+      (let [g        (tn/follower-grudge test led-by-n2)
+            [node]   (filter #(= 4 (count (g %))) (:nodes test))]
+        (is (some? node) (str "one node is cut off from the four others: " g))
+        (is (not= "n2" node) "never the leader")
+        (doseq [other (remove #{node} (:nodes test))]
+          (is (= #{node} (set (g other)))
+              (str other " is cut off from " node " alone")))))
+    (testing "the follower is drawn among the non-leaders"
+      (is (< 1 (count (distinct (repeatedly 50 #(->> (tn/follower-grudge test led-by-n2)
+                                                     (filter (fn [[_ v]] (= 4 (count v))))
+                                                     ffirst)))))))))
+
+(deftest the-follower-nemesis-passes-a-grudge-to-the-partitioner
+  (let [seen (atom [])
+        p    (reify
+               jepsen.nemesis/Nemesis
+               (setup! [this _] this)
+               (invoke! [_ _ op] (swap! seen conj op) op)
+               (teardown! [_ _]))
+        fp   (tn/follower-partition-nemesis led-by-n2 p)
+        test {:nodes ["n1" "n2" "n3" "n4" "n5"]}]
+    (jepsen.nemesis/invoke! fp test {:type :info :f :start-partition :value :follower})
+    (jepsen.nemesis/invoke! fp test {:type :info :f :start-partition :value :one})
+    (jepsen.nemesis/invoke! fp test {:type :info :f :stop-partition :value nil})
+    (let [[a b c] @seen]
+      (is (map? (:value a)) "a follower partition becomes a grudge")
+      (is (= :one (:value b)) "any other spec goes through as it is")
+      (is (= :stop-partition (:f c))))))

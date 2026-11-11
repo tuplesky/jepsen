@@ -79,6 +79,96 @@
              pkg))
          packages)))
 
+(defn partition-package?
+  "Whether a package from nc/nemesis-packages is the partition package."
+  [pkg]
+  (boolean (some #(= "partition" (:name %)) (:perf pkg))))
+
+(defn follower-grudge
+  "A grudge that cuts one voter off from every other node: a random node
+  outside db/primaries, so not the voter leading the highest ballot. Every
+  node when the DB names no primaries, or names them all."
+  [test db]
+  (let [nodes     (vec (:nodes test))
+        primaries (set (when (satisfies? db/Primary db) (db/primaries db test)))
+        others    (vec (remove primaries nodes))
+        node      (rand/nth (if (seq others) others nodes))]
+    (n/complete-grudge [[node] (vec (remove #{node} nodes))])))
+
+(defn follower-partition-nemesis
+  "Wraps nc/partition-nemesis `p` so a :start-partition whose value is
+  :follower cuts off one voter that does not lead (follower-grudge); every
+  other operation goes to `p` as it is."
+  [db p]
+  (reify
+    n/Reflection
+    (fs [_] [:start-partition :stop-partition])
+
+    n/Nemesis
+    (setup! [_ test]
+      (follower-partition-nemesis db (n/setup! p test)))
+
+    (invoke! [_ test op]
+      (if (and (= :start-partition (:f op)) (= :follower (:value op)))
+        (n/invoke! p test (assoc op :value (follower-grudge test db)))
+        (n/invoke! p test op)))
+
+    (teardown! [_ test]
+      (n/teardown! p test))))
+
+(defrecord Partitions [next start? targets hold-nanos gap-nanos]
+  ; Alternates a :start-partition on one of targets and a :stop-partition.
+  ; Each is due at `next`, absolute in the test's time, so asking again
+  ; before it is due gives the same time; the one after is due a hold (a
+  ; start's) or a gap (a stop's) later, drawn when this one is taken.
+  gen/Generator
+  (op [this test ctx]
+    (let [op (if start?
+               {:type :info, :f :start-partition, :value (rand/nth targets)}
+               {:type :info, :f :stop-partition, :value nil})
+          o  (gen/fill-in-op op ctx)]
+      (if (= :pending o)
+        [:pending this]
+        (let [t (max (:time o) next)]
+          [(assoc o :time t)
+           (Partitions. (+ t (if start? (hold-nanos) (gap-nanos)))
+                        (not start?) targets hold-nanos gap-nanos)]))))
+
+  (update [this _ _ _] this))
+
+(defn partition-generator
+  "Partitions on :partition's :targets that each heal after a uniform
+  [lo, hi] seconds, :partition's :seconds, the next starting a uniform
+  [0, 2 * every) seconds after the heal, :partition's :every or else
+  :interval; the first one that far into the test. Nil without :seconds."
+  [opts]
+  (when-let [[lo hi] (:seconds (:partition opts))]
+    (let [every   (:every (:partition opts) (:interval opts nc/default-interval))
+          targets (vec (:targets (:partition opts) [:one]))
+          nanos   (fn [secs] (long (gen/secs->nanos secs)))
+          span    (nanos (- hi lo))
+          hold    (fn [] (+ (nanos lo) (if (pos? span) (rand/long span) 0)))
+          gap     (fn [] (rand/long (nanos (* 2 every))))]
+      (Partitions. (gap) true targets hold gap))))
+
+(defn separate-partition-faults
+  "Takes nemesis-package opts and nc/nemesis-packages' packages, and gives
+  the partition package partition-generator's schedule when :partition has
+  :seconds, and follower-partition-nemesis when its :targets include
+  :follower. Other packages, and a partition package that needs neither,
+  are kept."
+  [opts packages]
+  (let [g         (partition-generator opts)
+        follower? (some #{:follower} (:targets (:partition opts)))]
+    (map (fn [pkg]
+           (if (partition-package? pkg)
+             (cond-> pkg
+               (and g (:generator pkg)) (assoc :generator g)
+               follower? (update :nemesis #(follower-partition-nemesis
+                                              (:db opts) %)))
+             pkg))
+         packages)))
+
 (def packet-targets
   "Whose traffic a packet fault disrupts: to and from one node, a
   minority, or every node."
@@ -208,13 +298,17 @@
 
 (defn nemesis-package
   "nc/nemesis-package, with the DB package's faults separated, the
-  network from jepsen.tuplesky.wan, the peer plane's hold at the
+  partition package's own schedule and follower targets when :partition
+  asks for them (separate-partition-faults), the network from
+  jepsen.tuplesky.wan, the peer plane's hold at the
   start when :hold-peers asks for one (hold-peers-package), and any
   packages in :extra (nils skipped)."
   [opts]
   (let [opts (update opts :faults set)
         hold (hold-peers-package (:hold-peers opts))]
     (nc/compose-packages
-      (cond-> (vec (with-wan opts (separate-db-faults opts (nc/nemesis-packages opts))))
+      (cond-> (vec (with-wan opts (->> (nc/nemesis-packages opts)
+                                       (separate-db-faults opts)
+                                       (separate-partition-faults opts))))
         hold (conj hold)
         true (into (remove nil? (:extra opts)))))))

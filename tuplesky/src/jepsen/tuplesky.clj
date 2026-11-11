@@ -135,6 +135,19 @@
     []
     (mapv keyword (str/split spec #","))))
 
+(defn parse-partition-seconds
+  "Parses LO-HI or SECS, then optionally /EVERY: how long each partition
+  lasts, from LO to HI seconds at random (SECS: exactly), and the mean
+  gap from a heal to the next partition (--nemesis-interval without it)."
+  [spec]
+  (let [[_ lo hi every] (re-matches #"(\d+(?:\.\d+)?)(?:-(\d+(?:\.\d+)?))?(?:/(\d+(?:\.\d+)?))?"
+                                    spec)]
+    (when lo
+      (let [lo (parse-double lo)
+            hi (if hi (parse-double hi) lo)]
+        (cond-> {:seconds [lo hi]}
+          every (assoc :every (parse-double every)))))))
+
 (defn throttle
   "Staggers a generator to about rate operations a second; a rate of 0
   leaves it unthrottled, so each client issues its next operation as soon
@@ -180,7 +193,12 @@
                         {:db        db
                          :nodes     (:nodes opts)
                          :faults    (:nemesis opts)
-                         :partition {:targets [:one :majority :majorities-ring]}
+                         :partition {:targets (case (:partition-targets opts)
+                                                :one      [:one]
+                                                :follower [:follower]
+                                                [:one :majority :majorities-ring])
+                                     :seconds (:seconds (:partition-seconds opts))
+                                     :every   (:every (:partition-seconds opts))}
                          :pause     {:targets [:one :majority]}
                          :kill      {:targets (case (:kill-targets opts)
                                                     :leader [:primaries]
@@ -284,6 +302,17 @@
     :default :any
     :parse-fn keyword
     :validate [#{:any :leader} "Must be any or leader"]]
+
+   [nil "--partition-targets TARGETS" "Whom a partition cuts off: any (one node, a majority or a ring of majorities, at random), one (one node), or follower (one voter that does not lead the highest ballot, from the voters' logs, cut off from every other node)."
+    :default :any
+    :parse-fn keyword
+    :validate [#{:any :one :follower} "Must be any, one or follower"]]
+
+   [nil "--partition-seconds LO-HI[/EVERY]" "How long each partition lasts before it heals, LO to HI seconds at random (or SECS), and the next one starts up to twice EVERY seconds after the heal (twice --nemesis-interval without it), such as 5-10/60. Without this a partition starts and heals on the nemesis' interval."
+    :parse-fn parse-partition-seconds
+    :validate [(fn [{[lo hi] :seconds every :every}]
+                 (and lo (pos? lo) (<= lo hi) (or (nil? every) (pos? every))))
+               "Must be LO-HI or SECS, then optionally /EVERY: positive seconds with LO at most HI"]]
 
    [nil "--recovery-time SECONDS" "How long to wait after healing before the final reads."
     :default 60
