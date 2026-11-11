@@ -198,7 +198,8 @@
                                                 :follower [:follower]
                                                 [:one :majority :majorities-ring])
                                      :seconds (:seconds (:partition-seconds opts))
-                                     :every   (:every (:partition-seconds opts))}
+                                     :every   (:every (:partition-seconds opts))
+                                     :live    db/running-nodes}
                          :pause     {:targets [:one :majority]}
                          :kill      {:targets (case (:kill-targets opts)
                                                     :leader [:primaries]

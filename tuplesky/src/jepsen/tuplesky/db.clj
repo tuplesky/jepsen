@@ -300,6 +300,18 @@
            seq
            (reduce max)))
 
+(defn running-nodes
+  "The nodes among `nodes` whose coordd runs, by its pidfile: what a
+  follower partition (jepsen.tuplesky.nemesis/follower-grudge) may cut
+  off, so never a voter a kill has taken down."
+  [test nodes]
+  (->> (c/on-nodes test nodes
+                   (fn [test node]
+                     (boolean (meh (c/su (cu/daemon-running? (pidfile (voter test node))))))))
+       (filter val)
+       (map key)
+       set))
+
 (defn kill!
   "Kills coordd outright."
   [test node]

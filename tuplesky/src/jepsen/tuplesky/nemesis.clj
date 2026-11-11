@@ -86,35 +86,43 @@
 
 (defn follower-grudge
   "A grudge that cuts one voter off from every other node: a random node
-  outside db/primaries, so not the voter leading the highest ballot. Every
-  node when the DB names no primaries, or names them all."
-  [test db]
-  (let [nodes     (vec (:nodes test))
-        primaries (set (when (satisfies? db/Primary db) (db/primaries db test)))
-        others    (vec (remove primaries nodes))
-        node      (rand/nth (if (seq others) others nodes))]
-    (n/complete-grudge [[node] (vec (remove #{node} nodes))])))
+  outside db/primaries, so not the voter leading the highest ballot, and,
+  with `live` (a function of the test and some nodes to the set of them
+  whose process runs), one that runs: a node a kill has taken down has
+  nothing to be cut off from. Without a running one, any outside the
+  primaries; every node when the DB names no primaries, or names them all."
+  ([test db] (follower-grudge test db nil))
+  ([test db live]
+   (let [nodes     (vec (:nodes test))
+         primaries (set (when (satisfies? db/Primary db) (db/primaries db test)))
+         others    (vec (remove primaries nodes))
+         running   (if (and live (seq others)) (set (live test others)) (set others))
+         alive     (filterv running others)
+         node      (rand/nth (cond (seq alive) alive (seq others) others :else nodes))]
+     (n/complete-grudge [[node] (vec (remove #{node} nodes))]))))
 
 (defn follower-partition-nemesis
   "Wraps nc/partition-nemesis `p` so a :start-partition whose value is
-  :follower cuts off one voter that does not lead (follower-grudge); every
-  other operation goes to `p` as it is."
-  [db p]
-  (reify
-    n/Reflection
-    (fs [_] [:start-partition :stop-partition])
+  :follower cuts off one running voter that does not lead
+  (follower-grudge, with `live` as there, or nil); every other operation
+  goes to `p` as it is."
+  ([db p] (follower-partition-nemesis db p nil))
+  ([db p live]
+   (reify
+     n/Reflection
+     (fs [_] [:start-partition :stop-partition])
 
-    n/Nemesis
-    (setup! [_ test]
-      (follower-partition-nemesis db (n/setup! p test)))
+     n/Nemesis
+     (setup! [_ test]
+       (follower-partition-nemesis db (n/setup! p test) live))
 
-    (invoke! [_ test op]
-      (if (and (= :start-partition (:f op)) (= :follower (:value op)))
-        (n/invoke! p test (assoc op :value (follower-grudge test db)))
-        (n/invoke! p test op)))
+     (invoke! [_ test op]
+       (if (and (= :start-partition (:f op)) (= :follower (:value op)))
+         (n/invoke! p test (assoc op :value (follower-grudge test db live)))
+         (n/invoke! p test op)))
 
-    (teardown! [_ test]
-      (n/teardown! p test))))
+     (teardown! [_ test]
+       (n/teardown! p test)))))
 
 (defrecord Partitions [next start? targets hold-nanos gap-nanos]
   ; Alternates a :start-partition on one of targets and a :stop-partition.
@@ -155,7 +163,8 @@
   "Takes nemesis-package opts and nc/nemesis-packages' packages, and gives
   the partition package partition-generator's schedule when :partition has
   :seconds, and follower-partition-nemesis when its :targets include
-  :follower. Other packages, and a partition package that needs neither,
+  :follower, with :partition's :live to find the running nodes. Other
+  packages, and a partition package that needs neither,
   are kept."
   [opts packages]
   (let [g         (partition-generator opts)
@@ -165,7 +174,7 @@
              (cond-> pkg
                (and g (:generator pkg)) (assoc :generator g)
                follower? (update :nemesis #(follower-partition-nemesis
-                                              (:db opts) %)))
+                                              (:db opts) % (:live (:partition opts)))))
              pkg))
          packages)))
 

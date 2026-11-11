@@ -198,3 +198,27 @@
       (is (map? (:value a)) "a follower partition becomes a grudge")
       (is (= :one (:value b)) "any other spec goes through as it is")
       (is (= :stop-partition (:f c))))))
+
+(deftest a-follower-grudge-skips-a-node-that-is-not-running
+  (let [test   {:nodes ["n1" "n2" "n3" "n4" "n5"]}
+        isolated (fn [g] (ffirst (filter (fn [[_ v]] (= 4 (count v))) g)))
+        asked  (atom [])]
+    (testing "only a running non-leader is cut off"
+      (dotimes [_ 30]
+        (is (= "n4" (isolated (tn/follower-grudge test led-by-n2
+                                                  (fn [_ nodes] (swap! asked conj (set nodes)) #{"n4" "n2"})))))))
+    (testing "it asks only about the non-leaders"
+      (is (every? #{#{"n1" "n3" "n4" "n5"}} @asked)))
+    (testing "with none running, any non-leader rather than none"
+      (dotimes [_ 30]
+        (is (not= "n2" (isolated (tn/follower-grudge test led-by-n2 (fn [_ _] #{})))))))
+    (testing "the nemesis passes its live function on"
+      (let [seen (atom nil)
+            p    (reify
+                   jepsen.nemesis/Nemesis
+                   (setup! [this _] this)
+                   (invoke! [_ _ op] (reset! seen op) op)
+                   (teardown! [_ _]))
+            fp   (tn/follower-partition-nemesis led-by-n2 p (fn [_ _] #{"n5"}))]
+        (jepsen.nemesis/invoke! fp test {:type :info :f :start-partition :value :follower})
+        (is (= "n5" (isolated (:value @seen))))))))
