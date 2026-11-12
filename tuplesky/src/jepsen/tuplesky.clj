@@ -223,11 +223,17 @@
                                                       (:generator nemesis))
                                           ; --activate-after's features,
                                           ; under load and the faults.
+                                          ; Asked again every
+                                          ; db/late-retry-secs until every
+                                          ; voter holds them (a voter down
+                                          ; defers an attempt).
                                           (when (seq (:features late))
-                                            (tn/at (:secs late)
-                                                   {:type  :info
-                                                    :f     :activate
-                                                    :value (:features late)}))))
+                                            (apply gen/any
+                                                   (for [i (range db/late-attempts)]
+                                                     (tn/at (+ (:secs late) (* i db/late-retry-secs))
+                                                            {:type  :info
+                                                             :f     :activate
+                                                             :value (:features late)}))))))
                            (gen/time-limit (:time-limit opts)))
         gen           (gen/phases
                         gen
@@ -367,7 +373,7 @@
     :default nil
     :parse-fn (fn [s] (vec (remove str/blank? (str/split s #","))))]
 
-   [nil "--activate-after SECS:FEATURES" "Replicated features to activate under load: SECS seconds into the workload, with the nemesis running, comma-separated in order, such as 60:answer-on-release. Every node asks through coordctl, as --activate does at setup, and has a minute; a node that doesn't hold them then (down, paused or cut off) is recorded in the operation, not failed. Needs a build with an admin socket (task-d99)."
+   [nil "--activate-after SECS:FEATURES" "Replicated features to activate under load: SECS seconds into the workload, with the nemesis running, comma-separated in order, such as 60:answer-on-release. Every node asks through coordctl, as --activate does at setup, and has a minute; a node that doesn't hold them then (paused or cut off) is recorded in the operation, not failed, and the activation is asked again every 20 s, up to 10 times, until every voter holds them; an attempt while a voter is down is deferred at once. Needs a build with an admin socket (task-d99)."
     :default nil
     :parse-fn (fn [s]
                 (let [[_ secs features] (re-find #"^(\d+(?:\.\d+)?):(.+)$" s)]

@@ -170,27 +170,49 @@
   [test]
   (boolean (or (seq (:activate test)) (seq (:features (:activate-after test))))))
 
-(defrecord LateActivation [features]
+(declare running-nodes)
+
+(def late-retry-secs
+  "Seconds between --activate-after's attempts."
+  20)
+
+(def late-attempts
+  "How many times --activate-after asks, at most: the first and its
+  retries."
+  10)
+
+(defrecord LateActivation [features held]
   n/Reflection
   (fs [_] #{:activate})
 
   n/Nemesis
   (setup! [this _] this)
 
-  ; Every node asks, as at setup, and each has a minute. A node that is
-  ; down, paused or cut off doesn't hold them in that minute; that is
-  ; recorded, not thrown, and the features' status at the end says
-  ; whether the restarts kept them.
+  ; The generator asks again every LATE-RETRY-SECS until every voter holds
+  ; the features. An attempt while a voter's coordd is down (killed and
+  ; not yet restarted) is deferred at once, with the nodes it waits for,
+  ; rather than waiting out the minute, since the restart is the
+  ; nemesis's own next operation. Otherwise every node asks, as at setup,
+  ; and each has a minute; a node that is paused or cut off doesn't hold
+  ; them in that minute, which is recorded, not thrown, and the next
+  ; attempt asks again. Once all hold, later attempts say :held-already.
   (invoke! [_ test op]
-    (let [held (c/on-nodes test
-                           (fn [test node]
-                             (try (activate! test node features 60000 :late)
-                                  :held
-                                  (catch Throwable e
-                                    (warn "Voter" (voter test node) "did not hold"
-                                          (str/join "," features) ":" (.getMessage e))
-                                    :not-held))))]
-      (assoc op :value (into (sorted-map) held))))
+    (if @held
+      (assoc op :value :held-already)
+      (let [down (remove (running-nodes test (:nodes test)) (:nodes test))]
+        (if (seq down)
+          (assoc op :value {:deferred (vec (sort down))})
+          (let [got (c/on-nodes test
+                                (fn [test node]
+                                  (try (activate! test node features 60000 :late)
+                                       :held
+                                       (catch Throwable e
+                                         (warn "Voter" (voter test node) "did not hold"
+                                               (str/join "," features) ":" (.getMessage e))
+                                         :not-held))))]
+            (when (every? #{:held} (vals got))
+              (reset! held true))
+            (assoc op :value (into (sorted-map) got)))))))
 
   (teardown! [_ _]))
 
@@ -200,7 +222,7 @@
   none."
   [{:keys [features]}]
   (when (seq features)
-    {:nemesis (LateActivation. features)
+    {:nemesis (LateActivation. features (atom false))
      :perf    #{{:name  "activate"
                  :fs    #{:activate}
                  :color "#A0C8E8"}}}))
