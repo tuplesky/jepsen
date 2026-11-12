@@ -95,17 +95,39 @@
                            (:per-key-limit opts 20)))
              (gen/process-limit 20))))))
 
+(defn swiftpaxos-register-generator
+  "The register workload's operations as jepsen.swiftpaxos's register test
+  draws them, the same generator over the same Jepsen: in each key's group
+  of 2n threads, n read and the rest write, with no compare-and-set, which
+  SwiftPaxos does not have. Each key's operations are limited as that test
+  limits them. So TupleSky can run the reference's own workload beside it."
+  [opts]
+  (let [n (count (:nodes opts))]
+    (independent/concurrent-generator
+      (* 2 n)
+      (range)
+      (fn [_k]
+        (->> (gen/reserve n lr/r lr/w)
+             (gen/limit (* (+ (rand/double 0.1) 0.9)
+                           (:per-key-limit opts 20)))
+             (gen/process-limit 20))))))
+
 (defn register-workload
   "Linearizable reads, writes and compare-and-set on independent
   registers, checked by Knossos. --register-mix etcd splits the client
-  threads as etcd's register test does (see etcd-register-generator)."
+  threads as etcd's register test does (see etcd-register-generator);
+  --register-mix swiftpaxos draws reads and writes alone as the reference's
+  test does (see swiftpaxos-register-generator)."
   [opts]
   (cond-> (assoc (lr/test {:nodes         (:nodes opts)
                            :model         (model/cas-register)
                            :per-key-limit (:per-key-limit opts)})
                  :client (client/client))
     (= :etcd (:register-mix opts))
-    (assoc :generator (etcd-register-generator opts))))
+    (assoc :generator (etcd-register-generator opts))
+
+    (= :swiftpaxos (:register-mix opts))
+    (assoc :generator (swiftpaxos-register-generator opts))))
 
 (def workloads
   {:append   append-workload
@@ -351,10 +373,10 @@
     :parse-fn parse-long
     :validate [pos? "Must be positive"]]
 
-   [nil "--register-mix MIX" "How the register workload splits its client threads: jepsen (Jepsen's register test: n readers in each key's group of 2n, the rest mixing write, cas, cas) or etcd (jepsen-io/etcd's register test as its runs split them: the first n threads read, every other mixes write and cas)."
+   [nil "--register-mix MIX" "How the register workload splits its client threads: jepsen (Jepsen's register test: n readers in each key's group of 2n, the rest mixing write, cas, cas) or etcd (jepsen-io/etcd's register test as its runs split them: the first n threads read, every other mixes write and cas), or swiftpaxos (jepsen.swiftpaxos's register test: n readers in each key's group of 2n, the rest writing, no cas)."
     :default :jepsen
     :parse-fn keyword
-    :validate [#{:jepsen :etcd} "Must be jepsen or etcd"]]
+    :validate [#{:jepsen :etcd :swiftpaxos} "Must be jepsen, etcd or swiftpaxos"]]
 
    ["-r" "--rate HZ" "Approximate number of requests per second, or 0 for as many as the clients can issue (a throughput test)."
     :default 20

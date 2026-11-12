@@ -88,8 +88,23 @@
     (testing "about a sixth of the operations are reads"
       (is (< 0.12 (/ (count reads) (count ops)) 0.22)))))
 
+(deftest swiftpaxos-register-mix
+  (let [ops    (->> (t/swiftpaxos-register-generator
+                      {:nodes ["n1" "n2" "n3" "n4" "n5"] :per-key-limit 100})
+                    (gen/limit 3000)
+                    (gen.test/perfect (gen.test/n+nemesis-context 30))
+                    (filter #(= :invoke (:type %))))
+        kinds  (set (map :f ops))]
+    (testing "reads and writes alone, as the reference's test draws them"
+      (is (= #{:read :write} kinds)))
+    (testing "both kinds are drawn"
+      (is (some #(= :read (:f %)) ops))
+      (is (some #(= :write (:f %)) ops)))))
+
 (deftest register-mix-option
-  (testing "the register workload takes the jepsen mix unless told etcd"
+  (testing "the register workload takes the jepsen mix unless told etcd or swiftpaxos"
     (let [parse #(:options (cli/parse-opts % t/cli-opts))]
       (is (= :jepsen (:register-mix (parse []))))
-      (is (= :etcd (:register-mix (parse ["--register-mix" "etcd"])))))))
+      (is (= :etcd (:register-mix (parse ["--register-mix" "etcd"]))))
+      (is (= :swiftpaxos (:register-mix (parse ["--register-mix" "swiftpaxos"]))))
+      (is (seq (:errors (cli/parse-opts ["--register-mix" "other"] t/cli-opts)))))))
