@@ -81,9 +81,11 @@
   :process-limit gen/process-limit 20 over each key: it left whole key
                  groups idle (in its runs one group of 3 at 30 clients and
                  6 of 12 at 120), because the concurrent generator's update
-                 hands a key's generator the whole test's context, so a key
+                 handed a key's generator the whole test's context, so a key
                  that met an update before its first op kept the first 20
-                 threads of the test, which can hold none of its group's;
+                 threads of the test, which can hold none of its group's
+                 (this Jepsen's jepsen.independent hands it the group's
+                 since);
   :jitter        each key limited to a random 0.9-1.0 of --per-key-limit."
   #{:on-threads :process-limit :jitter})
 

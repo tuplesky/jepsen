@@ -4,6 +4,7 @@
             [jepsen.generator :as gen]
             [jepsen.generator.context :as ctx]
             [jepsen.generator.test :as gen.test]
+            [jepsen.independent :as independent]
             [jepsen.tuplesky :as t]))
 
 (def base
@@ -135,6 +136,28 @@
       (is (#{:write :cas} (:f op)))))
   (testing "so does on-threads with jitter"
     (is (map? (first-op-after-a-whole-test-update #{:on-threads :jitter})))))
+
+(defn- recording
+  "A generator of writes that keeps, in the atom seen, the threads of the
+  context each update hands it."
+  [seen]
+  (reify gen/Generator
+    (op [this test ctx]
+      (let [[op _] (gen/op {:f :write, :value 1} test ctx)]
+        [op this]))
+    (update [this test ctx event]
+      (swap! seen conj (set (gen/all-threads ctx)))
+      this)))
+
+(deftest concurrent-generator-updates-in-the-group-context
+  (testing "a completion reaches its key's generator with its group's threads alone, as an op does"
+    (let [seen  (atom [])
+          all   (gen.test/n+nemesis-context 30)
+          g     (independent/concurrent-generator 10 (range) (fn [_k] (recording seen)))
+          [_ g] (gen/op g {} all)]
+      (gen/update g {} all {:type :ok, :process 25, :f :write, :time 0,
+                            :value (independent/tuple 2 1)})
+      (is (= [(set (range 20 30))] @seen)))))
 
 (deftest etcd-register-quirks-option
   (let [parse #(cli/parse-opts % t/cli-opts)]
