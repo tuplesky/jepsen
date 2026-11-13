@@ -71,29 +71,47 @@
               :client (client/client))
        (with-read-ratio (:read-ratio opts 0))))
 
+(def etcd-register-quirks
+  "The three ways the etcd mix's first generator (through `2057754`)
+  differed from jepsen-io/etcd's register test's own expression, each one
+  selectable with --etcd-register-quirks to find which left whole key
+  groups idle (#98: in its runs one group of 3 at 30 clients and about half
+  of 12 at 120 got no operations after their first keys):
+  :on-threads    the first n threads of the whole test read, through
+                 gen/any over two gen/on-threads, in place of gen/reserve
+                 (which here reserves n readers in every key's group of 2n);
+  :process-limit gen/process-limit 20 over each key;
+  :jitter        each key limited to a random 0.9-1.0 of --per-key-limit."
+  #{:on-threads :process-limit :jitter})
+
 (defn etcd-register-generator
-  "The register workload's operations split over the client threads as
-  jepsen-io/etcd's register test splits them in its runs: n threads in
-  all read (n the node count), and every other thread mixes writes and
-  compare-and-sets half each. etcd's test asks for n readers in each key's
-  group of 2n, but its runs here read on 5 threads of 30 at five nodes;
-  this takes the first n, which are in the first group. Jepsen's own
-  register test, which the jepsen mix runs, reads on n threads in every
-  group and mixes [w cas cas], so its histories hold more reads and fewer
-  writes than etcd's at the same clients. Each key's operations are
-  limited as that test limits them."
+  "The register workload's operations as jepsen-io/etcd's register test
+  draws them: on each key, `(->> (gen/mix [w cas]) (gen/reserve n r)
+  (gen/limit ops-per-key))`, n the node count, over key groups of 2n. With
+  --etcd-register-quirks, any of etcd-register-quirks in its place, alone
+  or together; all three are the etcd mix as it was through `2057754`.
+
+  This Jepsen's gen/reserve gives n readers in every key's group of 2n, so
+  about half the threads read. etcd's own runs (its Jepsen, 0.3.11) read on
+  the first n threads in all, which :on-threads draws."
   [opts]
   (let [n       (count (:nodes opts))
-        reader? (fn [thread] (and (integer? thread) (< thread n)))]
+        quirks  (set (:etcd-register-quirks opts))
+        limit   (:per-key-limit opts 100)
+        reader? (fn [thread] (and (integer? thread) (< thread n)))
+        mix     (gen/mix [lr/w lr/cas])]
     (independent/concurrent-generator
       (* 2 n)
       (range)
       (fn [_k]
-        (->> (gen/any (gen/on-threads reader? lr/r)
-                      (gen/on-threads (complement reader?) (gen/mix [lr/w lr/cas])))
-             (gen/limit (* (+ (rand/double 0.1) 0.9)
-                           (:per-key-limit opts 20)))
-             (gen/process-limit 20))))))
+        (cond->> (if (:on-threads quirks)
+                   (gen/any (gen/on-threads reader? lr/r)
+                            (gen/on-threads (complement reader?) mix))
+                   (gen/reserve n lr/r mix))
+          true                    (gen/limit (if (:jitter quirks)
+                                               (* (+ (rand/double 0.1) 0.9) limit)
+                                               limit))
+          (:process-limit quirks) (gen/process-limit 20))))))
 
 (defn swiftpaxos-register-generator
   "The register workload's operations as jepsen.swiftpaxos's register test
@@ -377,6 +395,13 @@
     :default :jepsen
     :parse-fn keyword
     :validate [#{:jepsen :etcd :swiftpaxos} "Must be jepsen, etcd or swiftpaxos"]]
+
+   [nil "--etcd-register-quirks LIST" "With --register-mix etcd: a comma-separated list of the etcd mix's first generator's differences from jepsen-io/etcd's own expression to put back (on-threads, process-limit, jitter; all three are the generator through 2057754), or none, the default, for etcd's expression."
+    :default #{}
+    :parse-fn (fn [s] (if (#{"" "none"} s)
+                        #{}
+                        (set (map keyword (str/split s #",")))))
+    :validate [#(every? etcd-register-quirks %) "Must be none, or some of on-threads, process-limit, jitter"]]
 
    ["-r" "--rate HZ" "Approximate number of requests per second, or 0 for as many as the clients can issue (a throughput test)."
     :default 20

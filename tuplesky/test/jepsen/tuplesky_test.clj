@@ -72,21 +72,44 @@
                        [:options :read-ratio])))
     (is (seq (:errors (cli/parse-opts ["--read-ratio" "1.5"] t/cli-opts))))))
 
+(defn- etcd-mix-invokes
+  "The invocations of 3000 operations of the etcd mix with these quirks, on
+  30 threads that never crash."
+  [quirks]
+  (->> (t/etcd-register-generator
+         {:nodes ["n1" "n2" "n3" "n4" "n5"] :per-key-limit 100
+          :etcd-register-quirks quirks})
+       (gen/limit 3000)
+       (gen.test/perfect (gen.test/n+nemesis-context 30))
+       (filter #(= :invoke (:type %)))))
+
 (deftest etcd-register-mix
-  (let [ops     (->> (t/etcd-register-generator
-                       {:nodes ["n1" "n2" "n3" "n4" "n5"] :per-key-limit 100})
-                     (gen/limit 3000)
-                     (gen.test/perfect (gen.test/n+nemesis-context 30))
-                     (filter #(= :invoke (:type %))))
-        reads   (filter #(= :read (:f %)) ops)
-        others  (remove #(= :read (:f %)) ops)]
-    (testing "the first n threads read, and only they"
-      (is (= #{0 1 2 3 4} (set (map :process reads)))))
-    (testing "every other thread mixes write and cas"
+  (testing "etcd's expression: n readers in each key's group of 2n, the rest mixing write and cas"
+    (let [ops    (etcd-mix-invokes #{})
+          reads  (filter #(= :read (:f %)) ops)
+          others (remove #(= :read (:f %)) ops)]
+      (is (= (set (concat (range 0 5) (range 10 15) (range 20 25)))
+             (set (map :process reads))))
+      (is (= #{:write :cas} (set (map :f others))))))
+  (testing "with on-threads, the first n threads read, and only they"
+    (let [ops    (etcd-mix-invokes #{:on-threads})
+          reads  (filter #(= :read (:f %)) ops)
+          others (remove #(= :read (:f %)) ops)]
+      (is (= #{0 1 2 3 4} (set (map :process reads))))
       (is (= #{:write :cas} (set (map :f others))))
-      (is (every? #(<= 5 % 29) (map :process others))))
-    (testing "about a sixth of the operations are reads"
-      (is (< 0.12 (/ (count reads) (count ops)) 0.22)))))
+      (is (every? #(<= 5 % 29) (map :process others)))
+      (is (< 0.12 (/ (count reads) (count ops)) 0.22))))
+  (testing "etcd's expression keeps every key group working to the end"
+    (let [late (drop 2000 (etcd-mix-invokes #{}))]
+      (is (= #{0 1 2} (set (map #(quot (:process %) 10) late)))))))
+
+(deftest etcd-register-quirks-option
+  (let [parse #(cli/parse-opts % t/cli-opts)]
+    (is (= #{} (:etcd-register-quirks (:options (parse [])))))
+    (is (= #{} (:etcd-register-quirks (:options (parse ["--etcd-register-quirks" "none"])))))
+    (is (= #{:on-threads :jitter}
+           (:etcd-register-quirks (:options (parse ["--etcd-register-quirks" "on-threads,jitter"])))))
+    (is (seq (:errors (parse ["--etcd-register-quirks" "on-threads,other"]))))))
 
 (deftest swiftpaxos-register-mix
   (let [ops    (->> (t/swiftpaxos-register-generator
