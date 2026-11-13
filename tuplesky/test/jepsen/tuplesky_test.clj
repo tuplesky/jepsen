@@ -2,6 +2,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.tools.cli :as cli]
             [jepsen.generator :as gen]
+            [jepsen.generator.context :as ctx]
             [jepsen.generator.test :as gen.test]
             [jepsen.tuplesky :as t]))
 
@@ -72,40 +73,72 @@
                        [:options :read-ratio])))
     (is (seq (:errors (cli/parse-opts ["--read-ratio" "1.5"] t/cli-opts))))))
 
+(def ^:private five-nodes
+  {:nodes ["n1" "n2" "n3" "n4" "n5"] :per-key-limit 100})
+
+(def ^:private etcd-register-all-quirks #{:on-threads :process-limit :jitter})
+
 (defn- etcd-mix-invokes
-  "The invocations of 3000 operations of the etcd mix with these quirks, on
-  30 threads that never crash."
+  "The invocations of 3000 operations of the etcd mix with these quirks
+  (nil for the default), on 30 threads that never crash."
   [quirks]
   (->> (t/etcd-register-generator
-         {:nodes ["n1" "n2" "n3" "n4" "n5"] :per-key-limit 100
-          :etcd-register-quirks quirks})
+         (cond-> five-nodes quirks (assoc :etcd-register-quirks quirks)))
        (gen/limit 3000)
        (gen.test/perfect (gen.test/n+nemesis-context 30))
        (filter #(= :invoke (:type %)))))
 
 (deftest etcd-register-mix
-  (testing "etcd's expression: n readers in each key's group of 2n, the rest mixing write and cas"
-    (let [ops    (etcd-mix-invokes #{})
-          reads  (filter #(= :read (:f %)) ops)
-          others (remove #(= :read (:f %)) ops)]
-      (is (= (set (concat (range 0 5) (range 10 15) (range 20 25)))
-             (set (map :process reads))))
-      (is (= #{:write :cas} (set (map :f others))))))
-  (testing "with on-threads, the first n threads read, and only they"
-    (let [ops    (etcd-mix-invokes #{:on-threads})
+  (testing "the default, on-threads: the first n threads read, and only they"
+    (let [ops    (etcd-mix-invokes nil)
           reads  (filter #(= :read (:f %)) ops)
           others (remove #(= :read (:f %)) ops)]
       (is (= #{0 1 2 3 4} (set (map :process reads))))
       (is (= #{:write :cas} (set (map :f others))))
       (is (every? #(<= 5 % 29) (map :process others)))
       (is (< 0.12 (/ (count reads) (count ops)) 0.22))))
-  (testing "etcd's expression keeps every key group working to the end"
-    (let [late (drop 2000 (etcd-mix-invokes #{}))]
-      (is (= #{0 1 2} (set (map #(quot (:process %) 10) late)))))))
+  (testing "etcd's literal expression: here, n readers in each key's group of 2n"
+    (let [ops    (etcd-mix-invokes #{})
+          reads  (filter #(= :read (:f %)) ops)
+          others (remove #(= :read (:f %)) ops)]
+      (is (= (set (concat (range 0 5) (range 10 15) (range 20 25)))
+             (set (map :process reads))))
+      (is (= #{:write :cas} (set (map :f others))))))
+  (testing "the default keeps every key group working to the end"
+    (let [late (drop 2000 (etcd-mix-invokes nil))]
+      (is (= #{0 1 2} (set (map #(quot (:process %) 10) late))))))
+  (testing "all three quirks under the perfect scheduler (printed, not checked: it can't lose the race)"
+    (let [late (drop 2000 (etcd-mix-invokes etcd-register-all-quirks))]
+      (println "etcd mix, all three quirks, perfect scheduler: key groups invoking after op 2000:"
+               (sort (set (map #(quot (:process %) 10) late)))))))
+
+(defn- first-op-after-a-whole-test-update
+  "What one fresh key's generator of the etcd mix with these quirks yields
+  to the key group of threads 20-29 out of 30, when, before it is asked
+  for an operation, it is updated with a completion from thread 25 in the
+  whole test's context: what the concurrent generator does when a key
+  change loses the tie for the next operation (#98)."
+  [quirks]
+  (let [test  {}
+        all   (gen.test/n+nemesis-context 30)
+        group ((ctx/make-thread-filter (set (range 20 30))) all)
+        gen   (t/etcd-register-key-generator five-nodes quirks)
+        gen   (gen/update gen test all {:type :ok, :process 25, :f :write,
+                                        :value 1, :time 0})]
+    (first (gen/op gen test group))))
+
+(deftest etcd-register-key-after-a-whole-test-update
+  (testing "the default still gives the key's own group an operation"
+    (let [op (first-op-after-a-whole-test-update t/etcd-register-default-quirks)]
+      (is (map? op))
+      (is (<= 20 (:process op) 29))
+      (is (#{:write :cas} (:f op)))))
+  (testing "so does on-threads with jitter"
+    (is (map? (first-op-after-a-whole-test-update #{:on-threads :jitter})))))
 
 (deftest etcd-register-quirks-option
   (let [parse #(cli/parse-opts % t/cli-opts)]
-    (is (= #{} (:etcd-register-quirks (:options (parse [])))))
+    (is (= #{:on-threads} (:etcd-register-quirks (:options (parse [])))))
     (is (= #{} (:etcd-register-quirks (:options (parse ["--etcd-register-quirks" "none"])))))
     (is (= #{:on-threads :jitter}
            (:etcd-register-quirks (:options (parse ["--etcd-register-quirks" "on-threads,jitter"])))))

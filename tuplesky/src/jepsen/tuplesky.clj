@@ -74,44 +74,64 @@
 (def etcd-register-quirks
   "The three ways the etcd mix's first generator (through `2057754`)
   differed from jepsen-io/etcd's register test's own expression, each one
-  selectable with --etcd-register-quirks to find which left whole key
-  groups idle (#98: in its runs one group of 3 at 30 clients and about half
-  of 12 at 120 got no operations after their first keys):
+  selectable with --etcd-register-quirks (#98):
   :on-threads    the first n threads of the whole test read, through
-                 gen/any over two gen/on-threads, in place of gen/reserve
-                 (which here reserves n readers in every key's group of 2n);
-  :process-limit gen/process-limit 20 over each key;
+                 gen/any over two gen/on-threads, in place of gen/reserve;
+                 the default, since it is etcd's runs' own split (below);
+  :process-limit gen/process-limit 20 over each key: it left whole key
+                 groups idle (in its runs one group of 3 at 30 clients and
+                 6 of 12 at 120), because the concurrent generator's update
+                 hands a key's generator the whole test's context, so a key
+                 that met an update before its first op kept the first 20
+                 threads of the test, which can hold none of its group's;
   :jitter        each key limited to a random 0.9-1.0 of --per-key-limit."
   #{:on-threads :process-limit :jitter})
 
-(defn etcd-register-generator
-  "The register workload's operations as jepsen-io/etcd's register test
-  draws them: on each key, `(->> (gen/mix [w cas]) (gen/reserve n r)
-  (gen/limit ops-per-key))`, n the node count, over key groups of 2n. With
-  --etcd-register-quirks, any of etcd-register-quirks in its place, alone
-  or together; all three are the etcd mix as it was through `2057754`.
+(def etcd-register-default-quirks
+  "The etcd mix as it runs unless told otherwise: on-threads alone."
+  #{:on-threads})
 
-  This Jepsen's gen/reserve gives n readers in every key's group of 2n, so
-  about half the threads read. etcd's own runs (its Jepsen, 0.3.11) read on
-  the first n threads in all, which :on-threads draws."
-  [opts]
+(defn etcd-register-key-generator
+  "One key's generator of the etcd mix, with these quirks (a subset of
+  etcd-register-quirks): with none, jepsen-io/etcd's register test's own
+  expression, `(->> (gen/mix [w cas]) (gen/reserve n r) (gen/limit
+  ops-per-key))`, n the node count.
+
+  That expression's reader split differs by Jepsen. etcd's runs (its
+  Jepsen 0.3.11, generator 0.1.1) reserve threads 0 to n - 1 of the whole
+  test, so the first n threads read and every other mixes write and cas;
+  :on-threads draws exactly that, from each thread's own number. This
+  Jepsen's gen/reserve (generator 0.1.5) reserves the first n threads of
+  the context it is first shown, the key's group's when an op comes first
+  and the whole test's when an update does, so its reader share depends on
+  timing: it is selectable (quirks none) and not the default."
+  [opts quirks]
   (let [n       (count (:nodes opts))
-        quirks  (set (:etcd-register-quirks opts))
         limit   (:per-key-limit opts 100)
         reader? (fn [thread] (and (integer? thread) (< thread n)))
         mix     (gen/mix [lr/w lr/cas])]
+    (cond->> (if (:on-threads quirks)
+               (gen/any (gen/on-threads reader? lr/r)
+                        (gen/on-threads (complement reader?) mix))
+               (gen/reserve n lr/r mix))
+      true                    (gen/limit (if (:jitter quirks)
+                                           (* (+ (rand/double 0.1) 0.9) limit)
+                                           limit))
+      (:process-limit quirks) (gen/process-limit 20))))
+
+(defn etcd-register-generator
+  "The register workload's operations as jepsen-io/etcd's register test's
+  runs draw them: over key groups of 2n threads, n the node count, each key
+  limited to --per-key-limit (100) operations; the first n threads of the
+  test read, every other thread mixes write and cas. --etcd-register-quirks
+  picks other ways to draw it (etcd-register-key-generator)."
+  [opts]
+  (let [n      (count (:nodes opts))
+        quirks (set (:etcd-register-quirks opts etcd-register-default-quirks))]
     (independent/concurrent-generator
       (* 2 n)
       (range)
-      (fn [_k]
-        (cond->> (if (:on-threads quirks)
-                   (gen/any (gen/on-threads reader? lr/r)
-                            (gen/on-threads (complement reader?) mix))
-                   (gen/reserve n lr/r mix))
-          true                    (gen/limit (if (:jitter quirks)
-                                               (* (+ (rand/double 0.1) 0.9) limit)
-                                               limit))
-          (:process-limit quirks) (gen/process-limit 20))))))
+      (fn [_k] (etcd-register-key-generator opts quirks)))))
 
 (defn swiftpaxos-register-generator
   "The register workload's operations as jepsen.swiftpaxos's register test
@@ -396,8 +416,9 @@
     :parse-fn keyword
     :validate [#{:jepsen :etcd :swiftpaxos} "Must be jepsen, etcd or swiftpaxos"]]
 
-   [nil "--etcd-register-quirks LIST" "With --register-mix etcd: a comma-separated list of the etcd mix's first generator's differences from jepsen-io/etcd's own expression to put back (on-threads, process-limit, jitter; all three are the generator through 2057754), or none, the default, for etcd's expression."
-    :default #{}
+   [nil "--etcd-register-quirks LIST" "With --register-mix etcd: how to draw it, as a comma-separated list of the etcd mix's first generator's differences from jepsen-io/etcd's own expression (on-threads, process-limit, jitter; all three are the generator through 2057754). The default, on-threads, is etcd's runs' own split; none is etcd's literal expression, whose reader split on this Jepsen depends on timing."
+    :default etcd-register-default-quirks
+    :default-desc "on-threads"
     :parse-fn (fn [s] (if (#{"" "none"} s)
                         #{}
                         (set (map keyword (str/split s #",")))))
