@@ -77,18 +77,30 @@
   (let [h (/ (double x) 2)]
     (if (== h (Math/rint h)) (long h) h)))
 
+(def in-order-rate
+  "The rate `inorder` gives each band between two nodes: netem holds a
+  packet behind the one before it whenever it has a rate, so jitter varies
+  the delay without reordering. High enough to pace nothing a test sends
+  (a 1500-byte packet takes 1.2 us at 10gbit)."
+  "10gbit")
+
 (defn- parse-extra
   "One standing addition to a profile, as `loss0.1` (0.1% of the packets
-  between every two nodes lost) or `jitter10` (each pair's delay varies by
-  10% of it, normally distributed, which reorders packets as netem does)."
+  between every two nodes lost), `jitter10` (each pair's delay varies by
+  10% of it, normally distributed, which reorders packets as netem does),
+  or `inorder` (the same jitter keeps packets in order: each band between
+  two nodes gets a rate of in-order-rate, so delay variance can be told
+  apart from reordering)."
   [spec extra]
-  (if-let [[_ kind x] (re-matches #"(loss|jitter)(\d+(?:\.\d+)?)" extra)]
-    (case kind
-      "loss"   {:loss (str x "%")}
-      "jitter" {:jitter-pct (number x)})
-    (throw (IllegalArgumentException.
-             (str "--wan addition must be lossPERCENT or jitterPERCENT, not "
-                  (pr-str extra) " in " (pr-str spec))))))
+  (if (= "inorder" extra)
+    {:in-order true}
+    (if-let [[_ kind x] (re-matches #"(loss|jitter)(\d+(?:\.\d+)?)" extra)]
+      (case kind
+        "loss"   {:loss (str x "%")}
+        "jitter" {:jitter-pct (number x)})
+      (throw (IllegalArgumentException.
+               (str "--wan addition must be lossPERCENT, jitterPERCENT or inorder, not "
+                    (pr-str extra) " in " (pr-str spec)))))))
 
 (defn parse-spec
   "Parses --wan: `none`, `regions`, `regions:AB/AC/BC` (three regions with
@@ -126,14 +138,15 @@
 
 (defn label
   "A short name for a profile, for a test's name: regions, regions-70-80-140,
-  20ms, with -loss1 or -jitter10 after when it has them."
+  20ms, with -loss1, -jitter10 or -inorder after when it has them."
   [wan]
   (when wan
     (str (case (:kind wan)
            :uniform (str (:delay-ms wan) "ms")
            (str/join "-" (cons (name (:kind wan)) (:rtts wan))))
          (when-let [l (:loss wan)] (str "-loss" (str/replace l "%" "")))
-         (when-let [j (:jitter-pct wan)] (str "-jitter" j)))))
+         (when-let [j (:jitter-pct wan)] (str "-jitter" j))
+         (when (:in-order wan) "-inorder"))))
 
 (defn parse-clients
   "Parses --wan-clients: `first` (beside the first node) or `local` (beside
@@ -182,8 +195,9 @@
 
 (defn standing
   "The profile's standing additions to src's traffic to dst, on top of
-  its delay `d`: its loss, and its jitter as a share of `d`. Only between
-  two nodes; the clients' traffic keeps its delay alone."
+  its delay `d`: its loss, its jitter as a share of `d`, and with
+  `inorder` a rate that keeps the packets in order. Only between two
+  nodes; the clients' traffic keeps its delay alone."
   [wan src dst d]
   (if (or (nil? wan) (= src dst))
     {}
@@ -191,7 +205,8 @@
       (:loss wan)       (assoc :loss (:loss wan))
       (and (:jitter-pct wan) (pos? d))
       (assoc :jitter-ms (let [j (/ (* d (:jitter-pct wan)) 100.0)]
-                          (if (== j (Math/rint j)) (long j) j))))))
+                          (if (== j (Math/rint j)) (long j) j)))
+      (:in-order wan)   (assoc :rate in-order-rate))))
 
 (defn behavior
   "What src's traffic to dst gets: the profile's delay and standing

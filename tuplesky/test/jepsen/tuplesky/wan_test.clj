@@ -35,6 +35,8 @@
          (wan/parse-spec "regions+jitter10")))
   (is (= {:kind :uniform, :delay-ms 20.0, :clients :first, :loss "1%", :jitter-pct 5}
          (wan/parse-spec "20+loss1+jitter5")))
+  (is (= {:kind :regions, :clients :first, :jitter-pct 10, :in-order true}
+         (wan/parse-spec "regions+jitter10+inorder")))
   (is (thrown? IllegalArgumentException (wan/parse-spec "regions:70/80")))
   (is (thrown? IllegalArgumentException (wan/parse-spec "regions:0/80/140")))
   (is (thrown? IllegalArgumentException (wan/parse-spec "regions+dup1")))
@@ -45,6 +47,8 @@
            (wan/label (wan/parse-spec "regions:70/80/140+loss0.1"))))
     (is (= "regions-70-80-140-jitter10"
            (wan/label (wan/parse-spec "regions:70/80/140+jitter10"))))
+    (is (= "regions-70-80-140-jitter10-inorder"
+           (wan/label (wan/parse-spec "regions:70/80/140+jitter10+inorder"))))
     (is (= "20.0ms" (wan/label (wan/parse-spec "20"))))
     (is (nil? (wan/label nil)))))
 
@@ -226,3 +230,11 @@
   (testing "the composed nemesis takes each packet operation once"
     (let [o (assoc opts :faults #{:packet :partition} :wan {:kind :regions})]
       (is (some? (:nemesis (tn/nemesis-package o)))))))
+
+(deftest in-order-jitter-gets-a-rate-between-nodes-only
+  (let [w (wan/parse-spec "regions:70/80/140+jitter10+inorder")]
+    (is (= {:delay-ms 35 :jitter-ms 3.5 :rate wan/in-order-rate}
+           (wan/behavior w nodes nil "n1" "n2")))
+    (is (= [:delay "35ms" "3.5ms" :distribution :normal :rate "10gbit"]
+           (wan/netem-args (wan/behavior w nodes nil "n1" "n2"))))
+    (is (= {} (wan/standing w "n1" "n1" 0)))))
