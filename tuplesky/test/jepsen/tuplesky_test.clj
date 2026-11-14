@@ -1,5 +1,6 @@
 (ns jepsen.tuplesky-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.java.io :as io]
+            [clojure.test :refer [deftest is testing]]
             [clojure.tools.cli :as cli]
             [jepsen.generator :as gen]
             [jepsen.generator.context :as ctx]
@@ -205,3 +206,18 @@
       (is (= :etcd (:register-mix (parse ["--register-mix" "etcd"]))))
       (is (= :swiftpaxos (:register-mix (parse ["--register-mix" "swiftpaxos"]))))
       (is (seq (:errors (cli/parse-opts ["--register-mix" "other"] t/cli-opts)))))))
+
+(deftest shim-stats-sums-each-shims-last-line
+  (let [dir (.toFile (java.nio.file.Files/createTempDirectory
+                       "shims" (make-array java.nio.file.attribute.FileAttribute 0)))]
+    (spit (io/file dir "shim-n1-1.log")
+          (str "noise\n"
+               "coord-jepsen stats ops=1 timed_out=1 late_established=1 late_unknown=0\n"
+               "coord-jepsen stats ops=10 timed_out=3 late_established=2 late_unknown=1\n"))
+    (spit (io/file dir "shim-n2-2.log")
+          "coord-jepsen stats ops=5 timed_out=1 late_established=0 late_unknown=1\n")
+    (spit (io/file dir "shim-n3-3.log") "a shim that never reached the end of its input\n")
+    (spit (io/file dir "other.log") "coord-jepsen stats ops=100\n")
+    (is (= {:shims 2, :ops 15, :timed_out 4, :late_established 2, :late_unknown 2}
+           (t/shim-stats {:run-dir (str dir)})))
+    (is (= {:shims 0} (t/shim-stats {:run-dir (str (io/file dir "missing"))})))))

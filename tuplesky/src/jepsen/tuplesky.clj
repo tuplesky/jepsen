@@ -13,6 +13,7 @@
                     [cli :as cli]
                     [generator :as gen]
                     [random :as rand]
+                    [store :as store]
                     [tests :as tests]]
             [jepsen.checker.timeline :as timeline]
             [jepsen.independent :as independent]
@@ -277,6 +278,40 @@
     (io/file "store" "tuplesky-runs"
              (str (System/currentTimeMillis) "-" (rand-int 100000)))))
 
+(defn shim-stats
+  "The clients' shims' `coord-jepsen stats` lines, which each shim writes
+  to its log in the test's run directory at the end of its input: each
+  shim's last, summed key by key, as {key n} with :shims, how many
+  reported. What a session's operations met once an attempt went
+  unanswered (coord-jepsen's Stats): committed after all, unknown to the
+  endpoint, or still unknown at the deadline."
+  [test]
+  (let [files (some->> (:run-dir test) io/file .listFiles
+                       (filter #(re-matches #"shim-.*\.log" (.getName ^java.io.File %))))
+        lines (keep (fn [f]
+                      (->> (str/split-lines (slurp f))
+                           (filter #(str/starts-with? % "coord-jepsen stats "))
+                           last))
+                    files)]
+    (reduce (fn [m line]
+              (merge-with + m (into {} (for [[_ k v] (re-seq #"(\w+)=(\d+)" line)]
+                                         [(keyword k) (Long/parseLong v)]))))
+            {:shims (count lines)}
+            lines)))
+
+(defn shim-stats-checker
+  "Keeps shim-stats in the test's store as shim-stats.txt, `key=value`
+  pairs on one line, for the run's summary. Always valid: it reads, it
+  does not judge."
+  []
+  (reify checker/Checker
+    (check [_ test _ _]
+      (let [s (shim-stats test)]
+        (when (pos? (:shims s))
+          (spit (store/path! test "shim-stats.txt")
+                (str (str/join " " (for [[k v] (sort-by key s)] (str (name k) "=" v))) "\n")))
+        (assoc s :valid? true)))))
+
 (defn tuplesky-test
   "Constructs a test from parsed CLI options."
   [opts]
@@ -364,6 +399,7 @@
                                 ; clean.
                                 :crash      (checker/log-file-pattern
                                               #"panicked at" "coordd.log")
+                                :shims      (shim-stats-checker)
                                 :workload   (:checker workload)})})))
 
 (def cli-opts
