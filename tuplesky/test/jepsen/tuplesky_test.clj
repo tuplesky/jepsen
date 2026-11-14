@@ -77,7 +77,7 @@
 (def ^:private five-nodes
   {:nodes ["n1" "n2" "n3" "n4" "n5"] :per-key-limit 100})
 
-(def ^:private etcd-register-all-quirks #{:on-threads :process-limit :jitter})
+(def ^:private etcd-register-all-quirks t/etcd-register-quirks)
 
 (defn- etcd-mix-invokes
   "The invocations of 3000 operations of the etcd mix with these quirks
@@ -108,9 +108,9 @@
   (testing "the default keeps every key group working to the end"
     (let [late (drop 2000 (etcd-mix-invokes nil))]
       (is (= #{0 1 2} (set (map #(quot (:process %) 10) late))))))
-  (testing "all three quirks under the perfect scheduler (printed, not checked: it can't lose the race)"
+  (testing "all four quirks under the perfect scheduler (printed, not checked: it can't lose the race)"
     (let [late (drop 2000 (etcd-mix-invokes etcd-register-all-quirks))]
-      (println "etcd mix, all three quirks, perfect scheduler: key groups invoking after op 2000:"
+      (println "etcd mix, all four quirks, perfect scheduler: key groups invoking after op 2000:"
                (sort (set (map #(quot (:process %) 10) late)))))))
 
 (defn- first-op-after-a-whole-test-update
@@ -157,7 +157,24 @@
           [_ g] (gen/op g {} all)]
       (gen/update g {} all {:type :ok, :process 25, :f :write, :time 0,
                             :value (independent/tuple 2 1)})
-      (is (= [(set (range 20 30))] @seen)))))
+      (is (= [(set (range 20 30))] @seen))))
+  (testing "whole-test-update hands it every thread's context, as the concurrent generator did before"
+    (let [seen  (atom [])
+          all   (gen.test/n+nemesis-context 30)
+          g     (t/whole-test-update
+                  (independent/concurrent-generator 10 (range) (fn [_k] (recording seen))))
+          [op g] (gen/op g {} all)]
+      (is (= 0 (key (:value op))))
+      (gen/update g {} all {:type :ok, :process 25, :f :write, :time 0,
+                            :value (independent/tuple 2 1)})
+      (is (= [(set (range 30))] @seen))))
+  (testing "and so process-limit's first 20 of 120 threads (0-4, 32-35, 38, 64, 68-71, 98, 100-103) leave the group of threads 10-19 nothing"
+    (let [all    (gen.test/n+nemesis-context 120)
+          group  ((ctx/make-thread-filter (set (range 10 20))) all)
+          old    (t/etcd-register-key-generator five-nodes etcd-register-all-quirks)
+          starve (gen/update old {} all {:type :ok, :process 15, :f :write,
+                                         :value 1, :time 0})]
+      (is (not (map? (first (gen/op starve {} group))))))))
 
 (deftest etcd-register-quirks-option
   (let [parse #(cli/parse-opts % t/cli-opts)]
@@ -165,6 +182,8 @@
     (is (= #{} (:etcd-register-quirks (:options (parse ["--etcd-register-quirks" "none"])))))
     (is (= #{:on-threads :jitter}
            (:etcd-register-quirks (:options (parse ["--etcd-register-quirks" "on-threads,jitter"])))))
+    (is (= t/etcd-register-quirks
+           (:etcd-register-quirks (:options (parse ["--etcd-register-quirks" "on-threads,process-limit,jitter,whole-test-update"])))))
     (is (seq (:errors (parse ["--etcd-register-quirks" "on-threads,other"]))))))
 
 (deftest swiftpaxos-register-mix

@@ -86,8 +86,13 @@
                  threads of the test, which can hold none of its group's
                  (this Jepsen's jepsen.independent hands it the group's
                  since);
-  :jitter        each key limited to a random 0.9-1.0 of --per-key-limit."
-  #{:on-threads :process-limit :jitter})
+  :jitter        each key limited to a random 0.9-1.0 of --per-key-limit;
+  :whole-test-update
+                 a key's generator updated in the whole test's context, as
+                 the concurrent generator updated it through 61704ff, which
+                 is what let :process-limit starve groups (whole-test-update),
+                 so that generator can run on this Jepsen: all four are it."
+  #{:on-threads :process-limit :jitter :whole-test-update})
 
 (def etcd-register-default-quirks
   "The etcd mix as it runs unless told otherwise: on-threads alone."
@@ -121,6 +126,24 @@
                                            limit))
       (:process-limit quirks) (gen/process-limit 20))))
 
+(defn whole-test-update
+  "A jepsen.independent concurrent generator `cg` whose updates reach a
+  key's generator in the whole test's context, as they did before
+  633fcf0, its operations unchanged: the etcd mix's first generator's
+  fourth quirk, so it runs here as it ran then (#98)."
+  [cg]
+  (when cg
+    (reify gen/Generator
+      (op [_ test ctx]
+        (when-let [[op cg'] (gen/op cg test ctx)]
+          [op (whole-test-update cg')]))
+      (update [_ test ctx event]
+        (let [group ((:thread->group cg)
+                     (gen/process->thread ctx (:process event)))]
+          (whole-test-update
+            (assoc cg :gens (update (:gens cg) group gen/update test ctx
+                                    (update event :value val)))))))))
+
 (defn etcd-register-generator
   "The register workload's operations as jepsen-io/etcd's register test's
   runs draw them: over key groups of 2n threads, n the node count, each key
@@ -130,10 +153,11 @@
   [opts]
   (let [n      (count (:nodes opts))
         quirks (set (:etcd-register-quirks opts etcd-register-default-quirks))]
-    (independent/concurrent-generator
-      (* 2 n)
-      (range)
-      (fn [_k] (etcd-register-key-generator opts quirks)))))
+    (cond-> (independent/concurrent-generator
+              (* 2 n)
+              (range)
+              (fn [_k] (etcd-register-key-generator opts quirks)))
+      (:whole-test-update quirks) whole-test-update)))
 
 (defn swiftpaxos-register-generator
   "The register workload's operations as jepsen.swiftpaxos's register test
@@ -418,13 +442,13 @@
     :parse-fn keyword
     :validate [#{:jepsen :etcd :swiftpaxos} "Must be jepsen, etcd or swiftpaxos"]]
 
-   [nil "--etcd-register-quirks LIST" "With --register-mix etcd: how to draw it, as a comma-separated list of the etcd mix's first generator's differences from jepsen-io/etcd's own expression (on-threads, process-limit, jitter; all three are the generator through 2057754). The default, on-threads, is etcd's runs' own split; none is etcd's literal expression, whose reader split on this Jepsen depends on timing."
+   [nil "--etcd-register-quirks LIST" "With --register-mix etcd: how to draw it, as a comma-separated list of the etcd mix's first generator's differences from jepsen-io/etcd's own expression (on-threads, process-limit, jitter, whole-test-update; all four are the generator through 2057754 as it ran on the Jepsen of its day). The default, on-threads, is etcd's runs' own split; none is etcd's literal expression, whose reader split on this Jepsen depends on timing."
     :default etcd-register-default-quirks
     :default-desc "on-threads"
     :parse-fn (fn [s] (if (#{"" "none"} s)
                         #{}
                         (set (map keyword (str/split s #",")))))
-    :validate [#(every? etcd-register-quirks %) "Must be none, or some of on-threads, process-limit, jitter"]]
+    :validate [#(every? etcd-register-quirks %) "Must be none, or some of on-threads, process-limit, jitter, whole-test-update"]]
 
    ["-r" "--rate HZ" "Approximate number of requests per second, or 0 for as many as the clients can issue (a throughput test)."
     :default 20
