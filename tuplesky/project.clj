@@ -6,7 +6,7 @@
   ; Built against the Jepsen in this repository: run `lein install` in
   ; ../jepsen first.
   :dependencies [[org.clojure/clojure "1.12.6"]
-                 [jepsen "0.3.15-SNAPSHOT"]
+                 [jepsen "0.3.15-tuplesky"]
                  [cheshire "5.13.0"]]
   :jvm-opts ["-Djava.awt.headless=true"
              "-server"
