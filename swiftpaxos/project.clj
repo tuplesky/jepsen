@@ -7,7 +7,7 @@
   ; ../jepsen first. The TupleSky test's sources come too, for its fault
   ; schedule (jepsen.tuplesky.nemesis), so both tests keep one.
   :dependencies [[org.clojure/clojure "1.12.6"]
-                 [jepsen "0.3.15-SNAPSHOT"]
+                 [jepsen "0.3.15-tuplesky"]
                  [cheshire "5.13.0"]]
   :source-paths ["src" "../tuplesky/src"]
   :jvm-opts ["-Djava.awt.headless=true"
