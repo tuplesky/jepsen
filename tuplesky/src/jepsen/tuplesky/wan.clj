@@ -378,6 +378,39 @@
                                               route))))))))]
     {:ips ips, :devs devs, :control-ips control-ips}))
 
+(defn shape-node!
+  "Shapes the current node's egress for the profile, with no fault, from
+  what the node knows itself: its peers' addresses as they resolve there,
+  the device it reaches them through, and the control node's address (its
+  SSH client). The DB calls it before the system starts, so connections
+  dialed at start already see the profile's round trips: QUIC's min_rtt
+  never expires, and BBR sizes its window from it, so a connection dialed
+  over an unshaped network keeps a sub-millisecond floor for the whole
+  run. The nemesis's setup shapes every node again, the same way. Returns
+  the bands, or nil without a profile, or when a peer does not resolve
+  here (the nemesis then shapes it, after the start)."
+  [test wan node]
+  (when wan
+    (let [nodes (:nodes test)
+          ips   (into {} (for [peer nodes :when (not= peer node)]
+                           [peer (resolve-ipv4 peer)]))]
+      (if (some (comp nil? val) ips)
+        (do (warn "WAN: a peer of" node "does not resolve there; it is shaped"
+                  "after the start, by the nemesis")
+            nil)
+        (let [control (first (str/split (str/trim (c/exec :printenv :SSH_CLIENT))
+                                        #"\s+"))
+              route   (c/exec :ip :-o :route :get (first (val (first ips))))
+              dev     (or (second (re-find #"\bdev (\S+)" route))
+                          (throw (IllegalStateException.
+                                   (str node " has no route device in: " route))))
+              bs      (bands wan nodes nil node)]
+          (c/su (apply-bands! dev (assoc ips :control [control]) bs))
+          (info "WAN" node "shaped before its start:"
+                (pr-str (mapv (fn [[args peers]] [(str/join " " (map name args)) peers])
+                              bs)))
+          bs)))))
+
 (defn ping-ms
   "The mean round trip of three pings from the current node, in
   milliseconds, or nil when none came back."

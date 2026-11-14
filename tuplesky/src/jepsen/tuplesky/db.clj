@@ -25,6 +25,7 @@
                     [util :as util :refer [meh]]]
             [jepsen.control.util :as cu]
             [jepsen.tuplesky.sockets :as sockets]
+            [jepsen.tuplesky.wan :as wan]
             [slingshot.slingshot :refer [throw+]]))
 
 (def dir "/opt/tuplesky")
@@ -364,6 +365,9 @@
         ; A store is initialized once; init refuses one that exists.
         (c/cd (bundle n)
               (c/exec binary :--config "coordd.toml" :init)))
+      ; The WAN profile before coordd starts, so its connections are
+      ; dialed over the shaped network (see wan/shape-node!).
+      (wan/shape-node! test (:wan test) node)
       (start! test node)
       (sockets/start! (sockets test))
       (await-log! n "^coordd phase=" #"phase=live" 60000 "live")
