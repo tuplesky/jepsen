@@ -290,12 +290,33 @@
                          :flowid (str "1:" band)]))))
             node-bands))))
 
+(def applied-file
+  "Where a node keeps the tc commands its bands were last applied with."
+  "/tmp/tuplesky-wan-bands")
+
 (defn- apply-bands!
-  "Replaces the current node's root qdisc with its bands."
+  "Replaces the current node's root qdisc with its bands, unless the same
+  commands already shaped it and its root prio qdisc is still there.
+  Replacing takes the root qdisc away for a moment, and a connection's
+  QUIC min_rtt keeps the least round trip it ever sees: the nemesis's
+  setup, after the system started, shaping again what the DB shaped before
+  it, gave the busiest paths a sub-millisecond least round trip for the
+  run. Returns :applied or :unchanged."
   [dev ips bs]
-  (util/meh (c/exec :tc :qdisc :del :dev dev :root))
-  (doseq [cmd (tc-commands dev ips bs)]
-    (apply c/exec :tc cmd)))
+  (let [cmds (tc-commands dev ips bs)
+        mark (pr-str cmds)]
+    (if (and (seq cmds)
+             (= mark (util/meh (c/exec :cat applied-file)))
+             (re-find #"qdisc prio 1: "
+                      (str (util/meh (c/exec :tc :qdisc :show :dev dev :root)))))
+      :unchanged
+      (do (util/meh (c/exec :rm :-f applied-file))
+          (util/meh (c/exec :tc :qdisc :del :dev dev :root))
+          (doseq [cmd cmds]
+            (apply c/exec :tc cmd))
+          (when (seq cmds)
+            (c/exec :echo mark :> applied-file))
+          :applied))))
 
 (defn shape!
   "Shapes every node's egress for the profile and the fault (nil for
@@ -309,7 +330,8 @@
                         ips' (assoc (ips node) :control [(control-ips node)])
                         bs   (bands wan nodes fault node)]
                     (c/su
-                      (try (apply-bands! dev ips' bs)
+                      (try (when (= :unchanged (apply-bands! dev ips' bs))
+                             (info "WAN" node "already has these bands; left as it is"))
                            (catch Exception e
                              (when fault
                                (util/meh (apply-bands! dev ips' (bands wan nodes nil node))))
@@ -322,7 +344,8 @@
   [test {:keys [devs]}]
   (c/on-nodes test
               (fn [_ node]
-                (c/su (util/meh (c/exec :tc :qdisc :del :dev (devs node) :root))))))
+                (c/su (util/meh (c/exec :rm :-f applied-file))
+                      (util/meh (c/exec :tc :qdisc :del :dev (devs node) :root))))))
 
 (defn ahosts-ipv4
   "The IPv4 addresses in `getent ahostsv4` output, in the resolver's order,
@@ -386,7 +409,8 @@
   dialed at start already see the profile's round trips: QUIC's min_rtt
   never expires, and BBR sizes its window from it, so a connection dialed
   over an unshaped network keeps a sub-millisecond floor for the whole
-  run. The nemesis's setup shapes every node again, the same way. Returns
+  run. The nemesis's setup then finds the same commands applied and leaves
+  the node as it is (see apply-bands!). Returns
   the bands, or nil without a profile, or when a peer does not resolve
   here (the nemesis then shapes it, after the start)."
   [test wan node]
