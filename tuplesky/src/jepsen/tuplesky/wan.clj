@@ -69,19 +69,71 @@
    {:corrupt "1%"}
    {:rate "10mbit"}])
 
+(defn- number [s]
+  (let [x (Double/parseDouble s)]
+    (if (== x (Math/rint x)) (long x) x)))
+
+(defn- half [x]
+  (let [h (/ (double x) 2)]
+    (if (== h (Math/rint h)) (long h) h)))
+
+(defn- parse-extra
+  "One standing addition to a profile, as `loss0.1` (0.1% of the packets
+  between every two nodes lost) or `jitter10` (each pair's delay varies by
+  10% of it, normally distributed, which reorders packets as netem does)."
+  [spec extra]
+  (if-let [[_ kind x] (re-matches #"(loss|jitter)(\d+(?:\.\d+)?)" extra)]
+    (case kind
+      "loss"   {:loss (str x "%")}
+      "jitter" {:jitter-pct (number x)})
+    (throw (IllegalArgumentException.
+             (str "--wan addition must be lossPERCENT or jitterPERCENT, not "
+                  (pr-str extra) " in " (pr-str spec))))))
+
 (defn parse-spec
-  "Parses --wan: `none`, `regions`, or a one-way delay in milliseconds
-  between every two nodes. The clients sit beside the first node."
+  "Parses --wan: `none`, `regions`, `regions:AB/AC/BC` (three regions with
+  those round trips in milliseconds between the first and second, the
+  first and third, and the second and third), or a one-way delay in
+  milliseconds between every two nodes; any but none may end in standing
+  additions, each after a `+` (see parse-extra), such as
+  regions:70/80/140+loss1. The clients sit beside the first node."
   [spec]
-  (cond
-    (or (nil? spec) (= "none" spec)) nil
-    (= "regions" spec)               {:kind :regions, :clients :first}
-    (re-matches #"\d+(\.\d+)?" spec) {:kind     :uniform
-                                      :delay-ms (Double/parseDouble spec)
-                                      :clients  :first}
-    :else (throw (IllegalArgumentException.
-                   (str "--wan must be none, regions or milliseconds, not "
-                        (pr-str spec))))))
+  (let [[base & extras] (some-> spec (str/split #"\+"))
+        profile
+        (cond
+          (or (nil? spec) (= "none" spec)) nil
+          (= "regions" base) {:kind :regions, :clients :first}
+          (re-matches #"regions:\d+(\.\d+)?/\d+(\.\d+)?/\d+(\.\d+)?" base)
+          (let [[ab ac bc] (map number (str/split (subs base 8) #"/"))]
+            (when (some (complement pos?) [ab ac bc])
+              (throw (IllegalArgumentException.
+                       (str "--wan round trips must be positive, not " (pr-str spec)))))
+            {:kind    :regions
+             :rtts    [ab ac bc]
+             :delay   {#{0 1} (half ab), #{0 2} (half ac), #{1 2} (half bc)}
+             :clients :first})
+          (re-matches #"\d+(\.\d+)?" base) {:kind     :uniform
+                                              :delay-ms (Double/parseDouble base)
+                                              :clients  :first}
+          :else (throw (IllegalArgumentException.
+                         (str "--wan must be none, regions, regions:AB/AC/BC or "
+                              "milliseconds, with +loss or +jitter after, not "
+                              (pr-str spec)))))]
+    (when (and (nil? profile) (seq extras))
+      (throw (IllegalArgumentException.
+               (str "--wan none takes no additions, not " (pr-str spec)))))
+    (reduce (fn [p extra] (merge p (parse-extra spec extra))) profile extras)))
+
+(defn label
+  "A short name for a profile, for a test's name: regions, regions-70-80-140,
+  20ms, with -loss1 or -jitter10 after when it has them."
+  [wan]
+  (when wan
+    (str (case (:kind wan)
+           :uniform (str (:delay-ms wan) "ms")
+           (str/join "-" (cons (name (:kind wan)) (:rtts wan))))
+         (when-let [l (:loss wan)] (str "-loss" (str/replace l "%" "")))
+         (when-let [j (:jitter-pct wan)] (str "-jitter" j)))))
 
 (defn parse-clients
   "Parses --wan-clients: `first` (beside the first node) or `local` (beside
@@ -118,7 +170,7 @@
                 b (region nodes dst)]
             (if (= a b)
               (:local regions)
-              (get (:delay regions) #{a b})))))
+              (get (or (:delay wan) (:delay regions)) #{a b})))))
 
 (defn client-delay-ms
   "The delay on a node's traffic to the clients: its round trip to the
@@ -128,11 +180,27 @@
     (* 2 (base-delay-ms wan nodes node (first nodes)))
     0))
 
+(defn standing
+  "The profile's standing additions to src's traffic to dst, on top of
+  its delay `d`: its loss, and its jitter as a share of `d`. Only between
+  two nodes; the clients' traffic keeps its delay alone."
+  [wan src dst d]
+  (if (or (nil? wan) (= src dst))
+    {}
+    (cond-> {}
+      (:loss wan)       (assoc :loss (:loss wan))
+      (and (:jitter-pct wan) (pos? d))
+      (assoc :jitter-ms (let [j (/ (* d (:jitter-pct wan)) 100.0)]
+                          (if (== j (Math/rint j)) (long j) j))))))
+
 (defn behavior
-  "What src's traffic to dst gets: the profile's delay, plus the fault's
-  behaviour when either end is one of the fault's targets."
+  "What src's traffic to dst gets: the profile's delay and standing
+  additions, plus the fault's behaviour when either end is one of the
+  fault's targets (a fault's delay and jitter add to the profile's; its
+  loss replaces the profile's)."
   [wan nodes fault src dst]
-  (let [base {:delay-ms (base-delay-ms wan nodes src dst)}]
+  (let [d    (base-delay-ms wan nodes src dst)
+        base (merge {:delay-ms d} (standing wan src dst d))]
     (if (and fault (or (contains? (:targets fault) src)
                        (contains? (:targets fault) dst)))
       (merge-with (fn [a b] (if (number? a) (+ a b) b))
@@ -374,3 +442,4 @@
   :start-packet [node-spec behaviour] and :stop-packet."
   [wan db]
   (Nemesis. wan db (atom nil)))
+

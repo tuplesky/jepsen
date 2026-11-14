@@ -16,6 +16,59 @@
   (is (thrown? IllegalArgumentException (wan/parse-spec "mars")))
   (is (thrown? IllegalArgumentException (wan/parse-spec "-5"))))
 
+(deftest parses-round-trips-and-standing-additions
+  (let [w (wan/parse-spec "regions:70/80/140")]
+    (is (= {:kind :regions, :rtts [70 80 140], :clients :first
+            :delay {#{0 1} 35, #{0 2} 40, #{1 2} 70}}
+           w))
+    (testing "the regions' delays are half the round trips"
+      (is (= 35 (wan/base-delay-ms w nodes "n1" "n2")))
+      (is (= 40 (wan/base-delay-ms w nodes "n1" "n3")))
+      (is (= 70 (wan/base-delay-ms w nodes "n2" "n3")))
+      (is (= 1 (wan/base-delay-ms w nodes "n1" "n4")) "one region, as before"))
+    (testing "an odd round trip halves to a fraction"
+      (is (= 37.5 (get-in (wan/parse-spec "regions:75/80/140") [:delay #{0 1}])))))
+  (is (= {:kind :regions, :rtts [70 80 140], :clients :first
+          :delay {#{0 1} 35, #{0 2} 40, #{1 2} 70}, :loss "0.1%"}
+         (wan/parse-spec "regions:70/80/140+loss0.1")))
+  (is (= {:kind :regions, :clients :first, :jitter-pct 10}
+         (wan/parse-spec "regions+jitter10")))
+  (is (= {:kind :uniform, :delay-ms 20.0, :clients :first, :loss "1%", :jitter-pct 5}
+         (wan/parse-spec "20+loss1+jitter5")))
+  (is (thrown? IllegalArgumentException (wan/parse-spec "regions:70/80")))
+  (is (thrown? IllegalArgumentException (wan/parse-spec "regions:0/80/140")))
+  (is (thrown? IllegalArgumentException (wan/parse-spec "regions+dup1")))
+  (is (thrown? IllegalArgumentException (wan/parse-spec "none+loss1")))
+  (testing "labels"
+    (is (= "regions" (wan/label (wan/parse-spec "regions"))))
+    (is (= "regions-70-80-140-loss0.1"
+           (wan/label (wan/parse-spec "regions:70/80/140+loss0.1"))))
+    (is (= "regions-70-80-140-jitter10"
+           (wan/label (wan/parse-spec "regions:70/80/140+jitter10"))))
+    (is (= "20.0ms" (wan/label (wan/parse-spec "20"))))
+    (is (nil? (wan/label nil)))))
+
+(deftest standing-additions-hold-between-nodes-only
+  (let [w (wan/parse-spec "regions:70/80/140+loss1+jitter10")]
+    (is (= {:delay-ms 35 :loss "1%" :jitter-ms 3.5} (wan/behavior w nodes nil "n1" "n2")))
+    (is (= {:delay-ms 1 :loss "1%" :jitter-ms 0.1} (wan/behavior w nodes nil "n1" "n4"))
+        "within a region too, scaled to its delay")
+    (is (= {:delay-ms 70 :loss "1%" :jitter-ms 7} (wan/behavior w nodes nil "n2" "n3")))
+    (testing "a fault's loss replaces the standing loss; its delay and jitter add"
+      (is (= {:delay-ms 85 :loss "1%" :jitter-ms 28.5}
+             (wan/behavior w nodes {:targets #{"n2"} :behavior {:delay-ms 50 :jitter-ms 25}}
+                           "n1" "n2")))
+      (is (= {:delay-ms 35 :loss "5%" :jitter-ms 3.5}
+             (wan/behavior w nodes {:targets #{"n2"} :behavior {:loss "5%"}} "n1" "n2"))))
+    (testing "the bands carry them; local clients get no band"
+      (is (= [[[:delay "1ms" "0.1ms" :distribution :normal :loss "1%"] ["n4"]]
+              [[:delay "35ms" "3.5ms" :distribution :normal :loss "1%"] ["n2" "n5"]]
+              [[:delay "40ms" "4ms" :distribution :normal :loss "1%"] ["n3"]]]
+             (wan/bands (assoc w :clients :local) nodes nil "n1")))))
+  (testing "loss alone, no jitter"
+    (is (= {:delay-ms 35 :loss "0.1%"}
+           (wan/behavior (wan/parse-spec "regions:70/80/140+loss0.1") nodes nil "n1" "n2")))))
+
 (deftest places-the-clients
   (is (= :local (wan/parse-clients "local")))
   (is (= :first (wan/parse-clients "first")))

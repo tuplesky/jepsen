@@ -266,9 +266,7 @@
          (str/join "," (map name (:nemesis opts)))
          "none")
        (when-let [w (:wan opts)]
-         (str " wan-" (if (= :uniform (:kind w))
-                        (str (:delay-ms w) "ms")
-                        (name (:kind w)))
+         (str " wan-" (wan/label w)
               (when (= :local (:clients w)) "-local-clients")))))
 
 (defn run-dir
@@ -468,7 +466,7 @@
     :parse-fn read-string
     :validate [#(and (number? %) (not (neg? %))) "Must be a number, 0 or more"]]
 
-   [nil "--wan PROFILE" "The network between the nodes: none, regions (three regions, 33 to 65 ms apart one way), or a one-way delay in milliseconds between every two nodes. See jepsen.tuplesky.wan."
+   [nil "--wan PROFILE" "The network between the nodes: none, regions (three regions, 33 to 65 ms apart one way), regions:AB/AC/BC (three regions with those round trips in ms), or a one-way delay in milliseconds between every two nodes; +lossPERCENT and +jitterPERCENT after add standing loss and jitter between the nodes, such as regions:70/80/140+loss1. See jepsen.tuplesky.wan."
     :default nil
     :parse-fn wan/parse-spec]
 
