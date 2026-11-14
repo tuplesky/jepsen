@@ -374,24 +374,22 @@
             (Double/parseDouble))))
 
 (defn measure
-  "Round trips in milliseconds: from the first node to each other node,
-  and from each node to the control node (where only the node's side is
-  shaped, so it is the clients' round trip); logged, so a run shows that
-  the shaping took. A peer is pinged at the first address its name
-  resolves to on the first node, the one a dial by name takes first. As
-  [[from to measured profile] ...]."
+  "Round trips in milliseconds: between every two nodes, from the one
+  earlier in :nodes to the later, and from each node to the control node
+  (where only the node's side is shaped, so it is the clients' round
+  trip); logged, so a run shows that the shaping took. A peer is pinged at
+  the first address its name resolves to on the pinging node, the one a
+  dial by name takes first. As [[from to measured profile] ...]."
   [test wan {:keys [ips control-ips]}]
-  (let [nodes        (:nodes test)
-        [a & others] nodes
-        peers   (when (seq others)
-                  (get (c/on-nodes test [a]
-                                   (fn [_ _]
-                                     (mapv (fn [b] [b (ping-ms (first (get-in ips [a b])))])
-                                           others)))
-                       a))
+  (let [nodes   (vec (:nodes test))
+        later   (fn [a] (subvec nodes (inc (.indexOf ^java.util.List nodes a))))
+        peers   (c/on-nodes test
+                            (fn [_ a]
+                              (mapv (fn [b] [b (ping-ms (first (get-in ips [a b])))])
+                                    (later a))))
         clients (c/on-nodes test (fn [_ node] (ping-ms (control-ips node))))]
     (concat
-      (for [[b rtt] peers]
+      (for [a nodes, [b rtt] (get peers a)]
         [a b rtt (* 2 (base-delay-ms wan nodes a b))])
       (for [node nodes]
         [node "control" (get clients node) (client-delay-ms wan nodes node)]))))
