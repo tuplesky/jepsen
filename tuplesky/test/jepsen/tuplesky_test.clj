@@ -161,10 +161,9 @@
   (testing "whole-test-update hands it every thread's context, as the concurrent generator did before"
     (let [seen  (atom [])
           all   (gen.test/n+nemesis-context 30)
-          g     (t/whole-test-update
-                  (independent/concurrent-generator 10 (range) (fn [_k] (recording seen))))
+          g     (t/whole-test-concurrent-generator 10 (range) (fn [_k] (recording seen)))
           [op g] (gen/op g {} all)]
-      (is (= 0 (key (:value op))))
+      (is (map? op))
       (gen/update g {} all {:type :ok, :process 25, :f :write, :time 0,
                             :value (independent/tuple 2 1)})
       (is (= [(set (range 30))] @seen))))

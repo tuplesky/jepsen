@@ -90,7 +90,8 @@
   :whole-test-update
                  a key's generator updated in the whole test's context, as
                  the concurrent generator updated it through 61704ff, which
-                 is what let :process-limit starve groups (whole-test-update),
+                 is what let :process-limit starve groups
+                 (whole-test-concurrent-generator),
                  so that generator can run on this Jepsen: all four are it."
   #{:on-threads :process-limit :jitter :whole-test-update})
 
@@ -126,11 +127,10 @@
                                            limit))
       (:process-limit quirks) (gen/process-limit 20))))
 
-(defn whole-test-update
-  "A jepsen.independent concurrent generator `cg` whose updates reach a
-  key's generator in the whole test's context, as they did before
-  633fcf0, its operations unchanged: the etcd mix's first generator's
-  fourth quirk, so it runs here as it ran then (#98)."
+(defn- whole-test-update
+  "A jepsen.independent ConcurrentGenerator record `cg` whose updates reach a
+  key's generator in the context they're given, the whole test's clients',
+  as they did before 633fcf0; its operations unchanged."
   [cg]
   (when cg
     (reify gen/Generator
@@ -138,11 +138,23 @@
         (when-let [[op cg'] (gen/op cg test ctx)]
           [op (whole-test-update cg')]))
       (update [_ test ctx event]
-        (let [group ((:thread->group cg)
-                     (gen/process->thread ctx (:process event)))]
-          (whole-test-update
-            (assoc cg :gens (update (:gens cg) group gen/update test ctx
-                                    (update event :value val)))))))))
+        (if-let [thread->group (:thread->group cg)]
+          (let [group (thread->group (gen/process->thread ctx (:process event)))]
+            (whole-test-update
+              (assoc cg :gens (update (:gens cg) group gen/update test ctx
+                                      (update event :value val)))))
+          ; Not yet asked for an op: no group has a generator to update.
+          (whole-test-update cg))))))
+
+(defn whole-test-concurrent-generator
+  "jepsen.independent/concurrent-generator as it was before 633fcf0: a
+  key's generator is updated in the whole test's clients' context, though
+  op hands it its group's. The etcd mix's first generator's fourth quirk,
+  so that generator runs here as it ran then (#98)."
+  [n keys fgen]
+  (gen/clients
+    (whole-test-update
+      (independent/->ConcurrentGenerator n fgen nil nil nil keys nil))))
 
 (defn etcd-register-generator
   "The register workload's operations as jepsen-io/etcd's register test's
@@ -153,11 +165,12 @@
   [opts]
   (let [n      (count (:nodes opts))
         quirks (set (:etcd-register-quirks opts etcd-register-default-quirks))]
-    (cond-> (independent/concurrent-generator
-              (* 2 n)
-              (range)
-              (fn [_k] (etcd-register-key-generator opts quirks)))
-      (:whole-test-update quirks) whole-test-update)))
+    ((if (:whole-test-update quirks)
+       whole-test-concurrent-generator
+       independent/concurrent-generator)
+     (* 2 n)
+     (range)
+     (fn [_k] (etcd-register-key-generator opts quirks)))))
 
 (defn swiftpaxos-register-generator
   "The register workload's operations as jepsen.swiftpaxos's register test
