@@ -386,6 +386,8 @@
 
   (teardown! [this test node]
     (meh (kill! test node))
+    ; The WAN nemesis leaves its profile for this, after coordd stopped.
+    (meh (wan/clear-node! test node))
     (sockets/stop! (sockets test))
     (c/su (c/exec :rm :-rf dir)))
 

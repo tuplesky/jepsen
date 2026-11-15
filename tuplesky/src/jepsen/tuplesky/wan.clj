@@ -367,6 +367,21 @@
   (ahosts-ipv4 (try (c/exec :getent :ahostsv4 host)
                     (catch RuntimeException _ ""))))
 
+(defn clear-node!
+  "Removes the current node's shaping, as clear! does for every node, when
+  the test has a WAN profile. The DB calls it in its teardown, after it
+  stopped the system, since the nemesis's teardown leaves the profile in
+  place for that."
+  [test node]
+  (when (:wan test)
+    (let [peer  (first (remove #{node} (:nodes test)))
+          ip    (some-> peer resolve-ipv4 first)
+          route (when ip (c/exec :ip :-o :route :get ip))
+          dev   (some->> route (re-find #"\bdev (\S+)") second)]
+      (when dev
+        (c/su (util/meh (c/exec :rm :-f applied-file))
+              (util/meh (c/exec :tc :qdisc :del :dev dev :root)))))))
+
 (defn learn
   "What the shaping needs from the nodes: on each node, the addresses its
   peers resolve to there (which is how the systems dial them, by name),
@@ -503,9 +518,17 @@
       (do (shape! test @state wan nil)
           (assoc op :value (if wan :wan :unshaped)))))
 
+  ; With a profile, teardown puts the profile back (a fault in progress
+  ; ends) and leaves it: the DB's teardown stops the system first and then
+  ; clears its node (clear-node!), so the system's last readings, such as
+  ; coordd's final metrics line at its stop, come from the shaped network.
+  ; Clearing here, before the DB stopped coordd, gave that final line an
+  ; unshaped sample and a far path a least round trip near zero.
   (teardown! [_ test]
     (when-let [s @state]
-      (clear! test s))))
+      (if wan
+        (shape! test s wan nil)
+        (clear! test s)))))
 
 (defn nemesis
   "The WAN nemesis: shapes the profile (nil for none) at setup, and takes
