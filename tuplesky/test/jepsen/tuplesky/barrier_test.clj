@@ -1,5 +1,6 @@
 (ns jepsen.tuplesky.barrier-test
   (:require [clojure.test :refer [deftest is]]
+            [jepsen.nemesis]
             [jepsen.tuplesky.barrier :as b]))
 
 (deftest parse-sample-reads-the-count-and-the-position
@@ -53,3 +54,9 @@
          (b/render {:bound-s 60 :waited-s 60.21 :result :behind :target 100}
                    (sorted-map "n1" {:executed 100 :gap 0 :running true}
                                "n2" {:executed nil :gap nil :running false})))))
+
+(deftest lag-package-only-when-asked
+  (is (nil? (b/lag-package 0)))
+  (is (nil? (b/lag-package nil)))
+  (is (= #{:lag-kill :lag-start-cut :lag-heal}
+         (jepsen.nemesis/fs (:nemesis (b/lag-package 10))))))

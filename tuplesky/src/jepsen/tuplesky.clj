@@ -343,7 +343,8 @@
                          :interval  (:nemesis-interval opts)
                          :extra     [(db/late-activation-package
                                        (:activate-after opts))
-                                     (barrier/package (:barrier-seconds opts))]})
+                                     (barrier/package (:barrier-seconds opts))
+                                     (barrier/lag-package (:lag-follower opts))]})
         late          (:activate-after opts)
         wrap          (:wrap-generator workload identity)
         gen           (->> (:generator workload)
@@ -351,6 +352,12 @@
                            ; The peer plane's hold, if any, from the
                            ; workload's start; the faults after it.
                            (gen/nemesis (gen/any
+                                          ; --lag-follower's kill, early
+                                          ; in the workload: the follower
+                                          ; stays down until the final
+                                          ; reads are done.
+                                          (when (pos? (:lag-follower opts 0))
+                                            (tn/at 10 {:type :info :f :lag-kill}))
                                           (gen/phases (tn/hold-peers-generator
                                                         (:hold-peer-links opts))
                                                       (gen/sleep 5)
@@ -379,6 +386,16 @@
                         (gen/log "Waiting for recovery")
                         (gen/sleep (:recovery-time opts))
                         (gen/clients (:final-generator workload))
+                        ; --lag-follower: with no client running, the
+                        ; killed follower starts cut off from every other
+                        ; node, then is healed; only catch-up brings it
+                        ; back, which the barrier then checks.
+                        (when (pos? (:lag-follower opts 0))
+                          (gen/phases
+                            (gen/log "Starting the lagging follower, cut off")
+                            (gen/nemesis {:type :info :f :lag-start-cut})
+                            (gen/sleep (:lag-follower opts))
+                            (gen/nemesis {:type :info :f :lag-heal})))
                         ; The clients have stopped: every voter must now
                         ; reach the highest executed position within
                         ; --barrier-seconds (jepsen.tuplesky.barrier).
@@ -466,6 +483,11 @@
    [nil "--recovery-time SECONDS" "How long to wait after healing before the final reads."
     :default 60
     :parse-fn read-string
+    :validate [(complement neg?) "Must not be negative"]]
+
+   [nil "--lag-follower SECONDS" "The no-traffic cell (#312 finding 3): kill one follower 10 s into the workload and leave it down; after the final reads, with no client running, start it cut off from every other node for SECONDS, then heal, and let the barrier check it catches up. Meant with --nemesis none, whose final heal restarts no node. 0 for none."
+    :default 0
+    :parse-fn parse-long
     :validate [(complement neg?) "Must not be negative"]]
 
    [nil "--barrier-seconds SECONDS" "After the final reads, with the clients stopped, how long every voter has to reach the highest executed position any voter reports (barrier.txt in the store; jepsen.tuplesky.barrier). 0 for no barrier."

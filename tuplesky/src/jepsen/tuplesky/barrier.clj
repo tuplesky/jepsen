@@ -15,11 +15,22 @@
   barrier writes what it saw to `barrier.txt` in the store, one `key=value`
   line for the result and one per voter, for the run's summary and the
   job's gate. It doesn't throw: a voter behind is a finding, not a
-  failure of the harness."
+  failure of the harness.
+
+  The no-traffic cell (--lag-follower) leaves the barrier one voter that
+  only catch-up can bring back: a follower killed early in the workload,
+  so its store falls behind everything after, started again once the
+  final reads are done but cut off from every other node for a while,
+  then healed with no client traffic at all (#312 finding 3: catch-up
+  that waits for traffic to probe). The barrier that follows must see it
+  reach the others."
   (:require [clojure.string :as str]
             [clojure.tools.logging :refer [info warn]]
             [jepsen [control :as c]
+                    [db :as jdb]
                     [nemesis :as n]
+                    [net :as net]
+                    [random :as rand]
                     [store :as store]
                     [util :refer [meh]]]
             [jepsen.tuplesky.db :as db]))
@@ -143,3 +154,57 @@
      :perf    #{{:name  "barrier"
                  :fs    #{:barrier}
                  :color "#C8C8C8"}}}))
+
+(defn lag-target
+  "The follower the no-traffic cell kills: a running voter that doesn't
+  lead the highest ballot, at random; nil when there is none."
+  [test]
+  (let [nodes     (vec (:nodes test))
+        primaries (set (meh (jdb/primaries (:db test) test)))
+        running   (db/running-nodes test (remove primaries nodes))]
+    (when (seq running)
+      (rand/nth (vec (sort running))))))
+
+(defrecord LagFollower [node]
+  n/Reflection
+  (fs [_] #{:lag-kill :lag-start-cut :lag-heal})
+
+  n/Nemesis
+  (setup! [this _] this)
+
+  ; :lag-kill takes the follower down early in the workload; it stays
+  ; down until :lag-start-cut, after the final reads, starts it again
+  ; behind a grudge that cuts it off from every other node; :lag-heal
+  ; ends the grudge, with no client running.
+  (invoke! [_ test op]
+    (case (:f op)
+      :lag-kill
+      (if-let [f (lag-target test)]
+        (do (reset! node f)
+            (c/on-nodes test [f] db/kill!)
+            (assoc op :value {:killed f}))
+        (assoc op :value :no-follower-running))
+
+      :lag-start-cut
+      (if-let [f @node]
+        (let [others (vec (remove #{f} (:nodes test)))]
+          (net/drop-all! test (n/complete-grudge [[f] others]))
+          (c/on-nodes test [f] db/start!)
+          (assoc op :value {:started f :cut-from others}))
+        (assoc op :value :nothing-killed))
+
+      :lag-heal
+      (do (net/heal! (:net test) test)
+          (assoc op :value {:healed @node}))))
+
+  (teardown! [_ _]))
+
+(defn lag-package
+  "The no-traffic cell's nemesis, for tuplesky-test; nil when `secs`, the
+  time the restarted follower is cut off, is zero or unset."
+  [secs]
+  (when (and secs (pos? secs))
+    {:nemesis (LagFollower. (atom nil))
+     :perf    #{{:name  "lag"
+                 :fs    #{:lag-kill :lag-start-cut :lag-heal}
+                 :color "#E8C8A0"}}}))
