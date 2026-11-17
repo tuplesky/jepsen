@@ -21,7 +21,8 @@
             [jepsen.tests.cycle [append :as append]
                                 [wr :as wr]]
             [jepsen.tests.linearizable-register :as lr]
-            [jepsen.tuplesky [client :as client]
+            [jepsen.tuplesky [barrier :as barrier]
+                             [client :as client]
                              [db :as db]
                              [nemesis :as tn]
                              [wan :as wan]]
@@ -341,7 +342,8 @@
                                       :port    (:peer-port opts)}
                          :interval  (:nemesis-interval opts)
                          :extra     [(db/late-activation-package
-                                       (:activate-after opts))]})
+                                       (:activate-after opts))
+                                     (barrier/package (:barrier-seconds opts))]})
         late          (:activate-after opts)
         wrap          (:wrap-generator workload identity)
         gen           (->> (:generator workload)
@@ -376,7 +378,14 @@
                         ; rejoin that late again.
                         (gen/log "Waiting for recovery")
                         (gen/sleep (:recovery-time opts))
-                        (gen/clients (:final-generator workload)))]
+                        (gen/clients (:final-generator workload))
+                        ; The clients have stopped: every voter must now
+                        ; reach the highest executed position within
+                        ; --barrier-seconds (jepsen.tuplesky.barrier).
+                        (when (pos? (:barrier-seconds opts 0))
+                          (gen/phases
+                            (gen/log "Barrier: waiting for every voter")
+                            (gen/nemesis {:type :info :f :barrier}))))]
     (merge tests/noop-test
            opts
            {:name            (test-name "tuplesky" opts)
@@ -457,6 +466,11 @@
    [nil "--recovery-time SECONDS" "How long to wait after healing before the final reads."
     :default 60
     :parse-fn read-string
+    :validate [(complement neg?) "Must not be negative"]]
+
+   [nil "--barrier-seconds SECONDS" "After the final reads, with the clients stopped, how long every voter has to reach the highest executed position any voter reports (barrier.txt in the store; jepsen.tuplesky.barrier). 0 for no barrier."
+    :default 60
+    :parse-fn parse-long
     :validate [(complement neg?) "Must not be negative"]]
 
    [nil "--key-count N" "Keys in play at once in the append and wr workloads (Elle's key-count): each key retires after its share of writes and a fresh one takes its place."
