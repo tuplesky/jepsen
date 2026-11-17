@@ -9,7 +9,14 @@
 
   The position is read live, from each voter's `metrics` lines: coordd
   prints one every interval (10 s by default), and its
-  `cost.executed` is the commands that replica has applied. Only a line
+  `cost.intake_index.executed` is the executed rows that voter's store
+  keeps, rebuilt from the store when it starts. (`cost.executed` is not
+  a position: it counts what the running process executed, so a voter
+  restarted late reads low however far it is.) While no floor has
+  forgotten a prefix of executed rows (task-d27), the kept rows are the
+  same count on every voter at one position; a run whose floors forget
+  rows can read a gap that is not lag, which the job's executed-at-end
+  read from each store shows. Only a line
   printed after the barrier started counts, so a voter that is down or
   hung shows as one with no fresh line, not as its stale position. The
   barrier writes what it saw to `barrier.txt` in the store, one `key=value`
@@ -40,11 +47,11 @@
   2000)
 
 (def executed-pattern
-  "The voter's executed position in a `metrics` line."
-  #"\"cost\":\{\"Observed\":\{\"executed\":(\d+)")
+  "The voter's executed rows kept, in a `metrics` line's intake index."
+  #"\"intake_index\":\{[^}]*\"executed\":(\d+)")
 
 (defn parse-sample
-  "A node's `<lines> <last metrics line's cost part>` answer as
+  "A node's `<lines> <last metrics line's intake index>` answer as
   {:lines n, :executed e}; :executed is nil where the last line has none."
   [text]
   (let [[lines & more] (str/split (str/trim (or text "")) #"\s+" 2)]
@@ -52,8 +59,8 @@
      :executed (some->> (first more) (re-find executed-pattern) second parse-long)}))
 
 (defn sample
-  "How many `metrics` lines voter n's log holds, and the executed position
-  in the last of them, read on the node."
+  "How many `metrics` lines voter n's log holds, and the executed rows
+  kept in the last of them, read on the node."
   [test node]
   (let [log (db/logfile (db/voter test node))]
     (parse-sample
@@ -61,7 +68,7 @@
                          (str "f=" log "; "
                               "printf '%s ' \"$(grep -c '^metrics ' \"$f\" 2>/dev/null)\"; "
                               "grep '^metrics ' \"$f\" 2>/dev/null | tail -n 1 | "
-                              "grep -o '\"cost\":{\"Observed\":{\"executed\":[0-9]*' || true")))))))
+                              "grep -o '\"intake_index\":{[^}]*}' || true")))))))
 
 (defn step
   "Folds one round of samples into the barrier's state: the line counts at

@@ -4,8 +4,19 @@
             [jepsen.tuplesky.barrier :as b]))
 
 (deftest parse-sample-reads-the-count-and-the-position
-  (is (= {:lines 30 :executed 255688}
-         (b/parse-sample "30 \"cost\":{\"Observed\":{\"executed\":255688\n")))
+  (is (= {:lines 30 :executed 2643}
+         (b/parse-sample (str "30 \"intake_index\":{\"entries\":0,\"bytes\":0,"
+                              "\"executed\":2643,\"executed_bytes\":79290}\n"))))
+  ; The process's own count is not the position: n3 of run 44174798654,
+  ; restarted late, had executed 39 commands itself and kept 2643 rows,
+  ; as every other voter did.
+  (is (= {:lines 36 :executed 2643}
+         (b/parse-sample (str "36 \"cost\":{\"Observed\":{\"executed\":39,"
+                              "\"intake_index\":{\"entries\":0,\"bytes\":0,"
+                              "\"executed\":2643,\"executed_bytes\":79290}\n"))))
+  ; executed_bytes alone is not the count.
+  (is (= {:lines 1 :executed nil}
+         (b/parse-sample "1 \"intake_index\":{\"executed_bytes\":79290}")))
   ; No metrics line yet, or no log.
   (is (= {:lines 0 :executed nil} (b/parse-sample "0 ")))
   (is (= {:lines 0 :executed nil} (b/parse-sample "")))
