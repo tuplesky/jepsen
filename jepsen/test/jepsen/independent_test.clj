@@ -75,15 +75,43 @@
       this)))
 
 (deftest concurrent-generator-update-context-test
-  ; A key's generator must be updated in its own group's context, as op
-  ; calls it. Otherwise a generator which builds a thread filter on its first
-  ; call (gen/process-limit, gen/reserve) can build it over the whole test
-  ; when a fresh key's generator sees a completion before an op, and with
-  ; gen/process-limit, leave a whole group with no threads to run on.
-  (let [seen  (atom [])
-        ctx   (gen.test/n+nemesis-context 30)
-        g     (concurrent-generator 10 (range) (fn [_k] (recording-gen seen)))
-        [_ g] (gen/op g {} ctx)]
-    (gen/update g {} ctx {:type :ok, :process 25, :f :write, :time 0,
-                          :value (tuple 2 1)})
-    (is (= [(set (range 20 30))] @seen))))
+  ; Updates must pass each key's generator its group's filtered context,
+  ; matching op, both before and after the first op call.
+  (let [ctx   (gen.test/n+nemesis-context 30)
+        event {:type :ok, :process 25, :f :write, :time 0,
+               :value (tuple 2 1)}]
+    (testing "after op"
+      (let [seen  (atom [])
+            g     (concurrent-generator 10 (range) (fn [_k] (recording-gen seen)))
+            [_ g] (gen/op g {} ctx)]
+        (gen/update g {} ctx event)
+        (is (= [(set (range 20 30))] @seen))))
+
+    (testing "before op"
+      (let [seen (atom [])
+            g    (concurrent-generator 10 (range) (fn [_k] (recording-gen seen)))
+            g    (gen/update g {} ctx event)]
+        (is (= [(set (range 20 30))] @seen))
+        (let [[op _] (gen/op g {} ctx)]
+          (is (= :write (:f op))))))))
+
+(deftest concurrent-generator-phases-test
+  ; When gen/phases moves from an ordinary client phase to a
+  ; concurrent-generator, Synchronize forwards the prior phase's completions
+  ; before concurrent-generator's first op. Non-tuple payloads must not throw
+  ; in update and must still pass a group-filtered context.
+  (doseq [init-val [42 nil]]
+    (testing (str "initial phase value " (pr-str init-val))
+      (let [seen (atom [])
+            h    (->> (gen/phases
+                        (gen/clients (gen/once {:f :init, :value init-val}))
+                        (concurrent-generator
+                          2 [0 1]
+                          (fn [_k] (gen/once (recording-gen seen)))))
+                      (gen.test/perfect (gen.test/n+nemesis-context 4)))]
+        (is (= #{:init :write} (set (map :f h))))
+        (is (= [init-val] (map :value (filter (comp #{:init} :f) h))))
+        (is (= #{(tuple 0 1) (tuple 1 1)}
+               (set (map :value (filter (comp #{:write} :f) h)))))
+        (is (pos? (count @seen)))
+        (is (every? #{#{0 1} #{2 3}} @seen))))))
